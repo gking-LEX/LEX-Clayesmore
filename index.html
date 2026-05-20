@@ -323,7 +323,7 @@ label.field-label{font-size:11px;font-weight:500;color:var(--text2);display:bloc
 <script>
 // Version freshness check — warns if browser is serving a cached old version
 (function(){
-  var CURRENT_VERSION = 'v68';
+  var CURRENT_VERSION = 'v71';
   var VERSION_KEY = 'lex-last-known-version';
   var LOAD_TIME_KEY = 'lex-last-load-time';
   var now = Date.now();
@@ -387,7 +387,7 @@ setTimeout(function(){
     '</ul>' +
     '<p style="margin-top:20px;"><button onclick="(function(){try{Object.keys(localStorage).filter(function(k){return k.indexOf(\'lex\')===0;}).forEach(function(k){localStorage.removeItem(k);});}catch(e){}location.reload(true);})()" style="background:#dc2626;color:#fff;border:none;padding:8px 16px;border-radius:4px;font-size:14px;cursor:pointer;">Clear cache &amp; reload</button> ' +
     '<button onclick="location.reload(true)" style="background:#fff;color:#1f2937;border:1px solid #ccc;padding:8px 16px;border-radius:4px;font-size:14px;cursor:pointer;margin-left:8px;">Just reload</button></p>' +
-    '<p style="margin-top:16px;font-size:12px;color:#6b7280;">Open the browser console (F12) for technical details. Loaded version: <strong>v68</strong>.</p>' +
+    '<p style="margin-top:16px;font-size:12px;color:#6b7280;">Open the browser console (F12) for technical details. Loaded version: <strong>v71</strong>.</p>' +
     '</div>';
 }, 3000);
 
@@ -1054,6 +1054,29 @@ function displayYg(yg){
 }
 // Display-friendly half-term label
 const HALF_TERMS=["A1","A2","Sp1","Sp2","S1","S2","LEX Week"];
+// v71: shared helper for display-only chronological ordering. Parses
+// d.full in DD/MM/YYYY form into [year, month, day] for safe comparison.
+// Returns NaN-equivalent fallback so malformed dates sort to the end
+// rather than throwing or scattering randomly.
+function parseDateDmy(full){
+  if(!full||typeof full!=="string")return [9999,99,99];
+  const m=full.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if(!m)return [9999,99,99];
+  return [parseInt(m[3],10),parseInt(m[2],10),parseInt(m[1],10)];
+}
+// v71: returns indices into dates[] ordered chronologically, preserving
+// insertion order as a stable tiebreaker. The returned indices are the
+// REAL di values — safe to pass anywhere that expects a date index.
+function sortedDateIndices(){
+  return dates.map((d,i)=>i).sort((a,b)=>{
+    const pa=parseDateDmy(dates[a]&&dates[a].full);
+    const pb=parseDateDmy(dates[b]&&dates[b].full);
+    if(pa[0]!==pb[0])return pa[0]-pb[0];
+    if(pa[1]!==pb[1])return pa[1]-pb[1];
+    if(pa[2]!==pb[2])return pa[2]-pb[2];
+    return a-b; // stable
+  });
+}
 function halfLabel(half){
   const m={A1:"Autumn 1",A2:"Autumn 2",Sp1:"Spring 1",Sp2:"Spring 2",S1:"Summer 1",S2:"Summer 2","LEX Week":"LEX Week"};
   return m[half]||half||"";
@@ -1889,14 +1912,47 @@ async function loadFromSupabase(){
   if(blobRes[1])staff=blobRes[1];
   if(blobRes[2])sa=blobRes[2];
   if(blobRes[3])pupils=blobRes[3];
-  if(blobRes[4])dates=blobRes[4];
+  if(blobRes[4]){
+    // v70: per-index merge with in-flight protection. A wholesale replace
+    // here is what silently reverted notes typed into existing date cards.
+    const _cloudDates=blobRes[4];
+    if(_touchedDateIdxs.size>0&&Array.isArray(_cloudDates)&&Array.isArray(dates)){
+      const _merged=_cloudDates.slice();
+      _touchedDateIdxs.forEach(idxStr=>{
+        const i=parseInt(idxStr,10);
+        // Only keep the local version if the date at this index still exists
+        // in both arrays and looks like the same date (same `full` field) —
+        // otherwise a remote add/delete would mis-align and we trust cloud.
+        if(!isNaN(i)&&dates[i]&&_merged[i]&&dates[i].full===_merged[i].full){
+          _merged[i]=dates[i];
+        }
+      });
+      dates=_merged;
+    } else {
+      dates=_cloudDates;
+    }
+  }
   if(blobRes[5])priorYTD=blobRes[5];
   if(blobRes[6])allocOverrides=blobRes[6];
   if(blobRes[7])allocHistory=blobRes[7];
   if(blobRes[8])formData=blobRes[8];
   if(blobRes[9])allocRes=blobRes[9];
   if(blobRes[10])venues=blobRes[10];
-  if(blobRes[11])consentMap=blobRes[11];
+  if(blobRes[11]){
+    // v69: deep per-pupil merge with in-flight protection, mirroring the
+    // _touchedAttKeys pattern. A wholesale replace here reverted ticks that
+    // a concurrent admin (or this admin, mid-write) had just made.
+    const _cloudCM=blobRes[11];
+    if(_touchedConsentKeys.size>0){
+      const _merged={..._cloudCM};
+      _touchedConsentKeys.forEach(k=>{
+        if(consentMap[k]!==undefined)_merged[k]=consentMap[k]; // keep local in-flight pupil
+      });
+      consentMap=_merged;
+    } else {
+      consentMap=_cloudCM;
+    }
+  }
   if(blobRes[12])savedSubGroups=blobRes[12];
   if(blobRes[13])notepadText=blobRes[13]||"";
   // v52: attendance now comes from the per-row table, not the blob.
@@ -2552,7 +2608,16 @@ function getConsentActivitiesForPupil(ne,engMap){
 }
 // Migrate old consentMap format {s1:bool,s2:bool} → per-activity {actName:bool}
 function migrateConsentMap(){
+  // v69: one-shot. Never re-run within a session, and bail immediately if
+  // nothing is in a legacy shape — a modern per-activity map must never be
+  // walked by this function again (that is what caused the v64-era loss).
+  if(_consentMigrationDone)return;
   if(!allocRes||!allocRes.length)return;
+  const _hasLegacy=Object.keys(consentMap).some(ne=>{
+    const c=consentMap[ne];
+    return c===true||(c&&typeof c==="object"&&(c.hasOwnProperty("s1")||c.hasOwnProperty("s2"))&&!Object.keys(c).some(k=>k!=="s1"&&k!=="s2"));
+  });
+  if(!_hasLegacy){_consentMigrationDone=true;return;}
   const engMap=buildEngMap();
   let migrated=false;
   Object.keys(consentMap).forEach(ne=>{
@@ -2560,31 +2625,39 @@ function migrateConsentMap(){
     if(cm===null||cm===undefined)return;
     // Detect old format: has s1/s2 keys but no activity-name keys
     if(typeof cm==="object"&&(cm.hasOwnProperty("s1")||cm.hasOwnProperty("s2"))&&!Object.keys(cm).some(k=>k!=="s1"&&k!=="s2")){
+      // v69: NON-DESTRUCTIVE. Preserve any already-present per-activity keys
+      // and only ADD derived ones. The old code built a fresh object and
+      // replaced cm wholesale, dropping ticks for any activity the current
+      // allocation snapshot no longer happened to include.
       const newCm={};
-      // Find what consent activities this pupil is on
+      Object.keys(cm).forEach(k=>{if(k!=="s1"&&k!=="s2")newCm[k]=cm[k];});
       const consentActs=getConsentActivitiesForPupil(ne,engMap);
-      // Map old s1/s2 booleans to activities running in that half
       consentActs.forEach(actName=>{
         const act=findActByName_exact(actName);if(!act)return;
-        // Determine which half(s) this activity runs in
         const actDi=act.di||[];
         const runsInS1=actDi.some(di=>dates[di]&&dates[di].half==="S1");
         const runsInS2=actDi.some(di=>dates[di]&&dates[di].half==="S2");
         if(runsInS1&&cm.s1)newCm[actName]=true;
         else if(runsInS2&&cm.s2)newCm[actName]=true;
       });
-      consentMap[ne]=newCm;
-      migrated=true;
+      // Only count as migrated if we actually changed something.
+      if(JSON.stringify(newCm)!==JSON.stringify((function(){var o={};Object.keys(cm).forEach(k=>{if(k!=="s1"&&k!=="s2")o[k]=cm[k];});return o;})())){
+        consentMap[ne]=newCm;migrated=true;
+      } else if(cm.hasOwnProperty("s1")||cm.hasOwnProperty("s2")){
+        // strip the dead s1/s2 scaffolding but keep all real keys
+        consentMap[ne]=newCm;migrated=true;
+      }
     }
-    // Handle legacy boolean format (cm===true)
     else if(cm===true){
+      // v69: legacy bare-true → expand to per-activity, additive only.
       const newCm={};
       getConsentActivitiesForPupil(ne,engMap).forEach(a=>{newCm[a]=true;});
       consentMap[ne]=newCm;
       migrated=true;
     }
   });
-  if(migrated){saveAll();console.log("ConsentMap migrated to per-activity format");}
+  _consentMigrationDone=true; // v69: never run again this session
+  if(migrated){saveAll();console.log("ConsentMap migrated to per-activity format (v69 non-destructive)");}
 }
 
 // ── Attendance helpers (v47 — per-session A/B) ──
@@ -2600,6 +2673,20 @@ function getAtt(key){
 // loadFromSupabase preserves these keys' local values on overwrite, so a load happening
 // during the brief window between local update and cloud confirmation can't undo the mark.
 let _touchedAttKeys=new Set();
+// v69: same in-flight protection for consent. consentMap had NONE — a cloud
+// pull landing between a local tick and its push reverted the tick and then
+// re-pushed the stale map (the concurrent-two-admin consent-loss amplifier).
+// Keys are normalised pupil emails (consentMap is keyed by ne).
+let _touchedConsentKeys=new Set();
+// v70: same in-flight protection for date-card edits (note, half-term).
+// Without this, a concurrent cloud pull mid-edit reverts d.note / d.half
+// via the wholesale `dates = blobRes[4]` in loadFromSupabase. Keys are
+// the numeric index into the dates[] array, stringified.
+let _touchedDateIdxs=new Set();
+// v69: migrateConsentMap must run AT MOST ONCE per session, and never on a
+// system already in the modern per-activity format. This flag retires it
+// from the unconditional every-load path.
+let _consentMigrationDone=false;
 // Same protection for per-date overrides — keys are "di|email" matching allocDateOverrides shape.
 let _touchedOvrKeys=new Set();
 // v66: Persistent pending-delete journal. A per-row override delete that fails
@@ -2983,7 +3070,7 @@ function renderTopbar(){
   const reminders=getAdminReminders();
   const bar=h("div",{className:"topbar"},
     h("img",{src:LEX_LOGO_DATA_URI,className:"logo-img",alt:"Clayesmore LEX",style:{height:"30px",width:"auto",flexShrink:0}}),
-    h("div",{className:"logo-text"},"System ",h("span",null,SYSTEM_YEAR_LABEL+" · v68")),
+    h("div",{className:"logo-text"},"System ",h("span",null,SYSTEM_YEAR_LABEL+" · v71")),
     h("div",{className:"topbar-meta"},`${staff.length} staff · ${acts.length} activities · ${pupils.length} pupils · ${formData.length} form responses`),
     h("div",{className:"topbar-right"},
       h("span",{id:"presence-dots",style:{display:"inline-flex",alignItems:"center",gap:"1px"}}),
@@ -4655,7 +4742,11 @@ function renderAllocResults(el){
         consentCell.appendChild(h("label",{style:{fontSize:"9px",display:"flex",alignItems:"center",gap:"3px",justifyContent:"center",marginBottom:"1px",cursor:"pointer"},title:actName+(isOneOff?" ("+dates[actDi[0]].label+")":"")},
           h("input",{type:"checkbox",checked:given,onChange:e=>{
             if(!consentMap[ne]||typeof consentMap[ne]!=="object")consentMap[ne]={};
-            consentMap[ne][actName]=e.target.checked;saveAll();
+            consentMap[ne][actName]=e.target.checked;
+            _touchedConsentKeys.add(ne); // v69: protect from concurrent cloud pull
+            saveAll();
+            // release protection shortly after the write has had time to flush
+            setTimeout(()=>{_touchedConsentKeys.delete(ne);},8000);
           }}),label));
       });
     } else {
@@ -9182,14 +9273,42 @@ function renderAdminDates(el){
   ));
   el.appendChild(h("div",{className:"alert alert-info",style:{marginBottom:"12px",fontSize:"12px"}},"ℹ Each half-term (A1, A2, Sp1, Sp2, S1, S2, LEX Week) is an independent allocation period. Set each date's half-term using the dropdown on its card below. LEX Week dates must NOT be labelled S2 — they use separate allocations."));
   const dw=h("div",{style:{display:"flex",gap:"10px",flexWrap:"wrap",marginBottom:"20px"}});
-  dates.forEach((d,i)=>{
+  // v71: display-only chronological sort — iterate indices in sorted order,
+  // but `i` is still the REAL di so every handler (delete, note, half, the
+  // _touchedDateIdxs tracking) continues to reference the stored index.
+  sortedDateIndices().forEach(i=>{
+    const d=dates[i];
     const c=h("div",{className:"card card-pad",style:{minWidth:"150px",position:"relative"}});
     c.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px"}},d.label));
     c.appendChild(h("div",{className:"badge "+halfBadge(d.half),style:{marginTop:"4px"}},halfLabel(d.half)));
     if(d.note)c.appendChild(h("div",{style:{fontSize:"10px",color:"var(--amber)",marginTop:"4px"}},d.note));
-    c.appendChild(h("input",{value:d.note||"",placeholder:"Add note…",style:{width:"100%",marginTop:"8px",fontSize:"11px"},onInput:e=>{d.note=e.target.value;saveAll();}}));
+    // v70: was onInput + per-keystroke saveAll — every character queued a
+    // cloud push, and any pull arriving between keystrokes (auto-refresh or
+    // a concurrent admin) clobbered the in-progress note via the wholesale
+    // dates= replace in loadFromSupabase. Now commit on blur/Enter and
+    // protect this index from concurrent cloud pulls while focused.
+    const _noteIdxStr=String(i);
+    c.appendChild(h("input",{value:d.note||"",placeholder:"Add note…",style:{width:"100%",marginTop:"8px",fontSize:"11px"},
+      onFocus:()=>{_touchedDateIdxs.add(_noteIdxStr);},
+      onKeyDown:ev=>{if(ev.key==="Enter"){ev.target.blur();}},
+      onBlur:ev=>{
+        const newVal=ev.target.value;
+        if((d.note||"")!==newVal){d.note=newVal;saveAll();}
+        // release protection shortly after, giving the debounced cloud write
+        // time to flush so a subsequent pull sees our value, not stale cloud.
+        setTimeout(()=>{_touchedDateIdxs.delete(_noteIdxStr);},8000);
+      }
+    }));
     // Editable half-term selector
-    const halfSel=h("select",{style:{width:"100%",marginTop:"4px",fontSize:"11px"},onChange:e=>{d.half=e.target.value;saveAll();render();}});
+    // v70: protect this index across the saveAll->render gap. render() flushes
+    // the new value to DOM, but the half-second between save and the next
+    // auto-refresh pull is still a race window without explicit protection.
+    const halfSel=h("select",{style:{width:"100%",marginTop:"4px",fontSize:"11px"},onChange:e=>{
+      _touchedDateIdxs.add(String(i));
+      d.half=e.target.value;saveAll();
+      setTimeout(()=>{_touchedDateIdxs.delete(String(i));},8000);
+      render();
+    }});
     HALF_TERMS.forEach(v=>{const o=h("option",{value:v},halfLabel(v));if(d.half===v)o.selected=true;halfSel.appendChild(o);});
     // If current half doesn't match any preset, add it as option
     if(!HALF_TERMS.includes(d.half)){const o=h("option",{value:d.half},d.half);o.selected=true;halfSel.appendChild(o);}
