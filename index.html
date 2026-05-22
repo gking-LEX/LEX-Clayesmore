@@ -1,12 +1,111 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<!DOCTYPE html>
-<html lang="en">
-<head>
+<!-- ====== LEX SSO GATE v1 — INSERT AS FIRST CHILD OF <head> ====== -->
 <script>
-  // existing v67/v68 credential bootstrap
-  ...
+(function(){
+  'use strict';
+  const CLIENT_ID = '947554001213-5qj34kd26ppqk4p1ug9h9rc2tihj4n7e.apps.googleusercontent.com';
+  const ALLOWED_HD = 'clayesmore.com';
+  const SESSION_KEY = '__lex_auth_v1__';
+
+  function decodeJwt(jwt){
+    try {
+      const parts = jwt.split('.');
+      if (parts.length !== 3) return null;
+      const payload = parts[1].replace(/-/g,'+').replace(/_/g,'/');
+      const padded = payload + '='.repeat((4 - payload.length % 4) % 4);
+      const decoded = atob(padded);
+      return JSON.parse(decodeURIComponent(escape(decoded)));
+    } catch(e){ return null; }
+  }
+
+  function getValidSession(){
+    try {
+      const raw = sessionStorage.getItem(SESSION_KEY);
+      if (!raw) return null;
+      const s = JSON.parse(raw);
+      if (!s || !s.exp) return null;
+      if (Date.now()/1000 >= s.exp) return null;
+      if (s.hd !== ALLOWED_HD) return null;
+      if (s.aud !== CLIENT_ID) return null;
+      return s;
+    } catch(e){ return null; }
+  }
+
+  const session = getValidSession();
+  if (session) {
+    window.__LEX_USER__ = { email: session.email, name: session.name, hd: session.hd };
+    window.lexSignOut = function(){
+      sessionStorage.removeItem(SESSION_KEY);
+      try {
+        if (window.google && google.accounts && google.accounts.id) {
+          google.accounts.id.disableAutoSelect();
+        }
+      } catch(e){}
+      window.location.reload();
+    };
+    return;
+  }
+
+  window.__LEX_HANDLE_CREDENTIAL__ = function(response){
+    const claims = decodeJwt(response && response.credential);
+    if (!claims) return showError('Invalid sign-in response.');
+    if (claims.iss !== 'https://accounts.google.com' && claims.iss !== 'accounts.google.com') return showError('Invalid token issuer.');
+    if (claims.aud !== CLIENT_ID) return showError('Token audience does not match.');
+    if (claims.hd !== ALLOWED_HD) return showError('Please sign in with a clayesmore.com account.');
+    if (!claims.email_verified) return showError('Your Google email is not verified.');
+    if (!claims.exp || claims.exp <= Date.now()/1000) return showError('Token expired. Please try again.');
+
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({
+      email: claims.email,
+      name: claims.name || claims.email,
+      hd: claims.hd,
+      aud: claims.aud,
+      exp: claims.exp,
+      iat: claims.iat
+    }));
+    window.location.reload();
+  };
+
+  function showError(msg){
+    const el = document.getElementById('lex-gate-error');
+    if (el) { el.textContent = msg; el.style.display = 'block'; }
+    sessionStorage.removeItem(SESSION_KEY);
+  }
+
+  const gateHtml = '<!DOCTYPE html><html lang="en"><head>' +
+'<meta charset="utf-8">' +
+'<meta name="viewport" content="width=device-width,initial-scale=1">' +
+'<title>LEX \u2014 Sign in</title>' +
+'<style>' +
+'html,body{height:100%;margin:0;padding:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#f3f4f6;color:#111827}' +
+'.lex-gate-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1.5rem}' +
+'.lex-gate-card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:2rem 2.5rem;max-width:22rem;width:100%;box-shadow:0 1px 3px rgba(0,0,0,.05);text-align:center}' +
+'.lex-gate-logo{font-size:2rem;font-weight:700;letter-spacing:-.02em;margin:0 0 .25rem;color:#0f172a}' +
+'.lex-gate-sub{margin:0 0 1.5rem;color:#475569;font-size:.95rem;line-height:1.4}' +
+'.lex-gate-btn-wrap{display:flex;justify-content:center;margin:1rem 0;min-height:44px}' +
+'#lex-gate-error{display:none;margin:1rem 0 0;padding:.6rem .8rem;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;color:#991b1b;font-size:.875rem;text-align:left}' +
+'.lex-gate-foot{margin:1.5rem 0 0;font-size:.75rem;color:#94a3b8;line-height:1.4}' +
+'</style>' +
+'</head><body>' +
+'<div class="lex-gate-wrap"><div class="lex-gate-card">' +
+'<h1 class="lex-gate-logo">LEX</h1>' +
+'<p class="lex-gate-sub">Sign in with your Clayesmore Google account</p>' +
+'<div id="g_id_onload" data-client_id="' + CLIENT_ID + '" data-context="signin" data-ux_mode="popup" data-callback="__LEX_HANDLE_CREDENTIAL__" data-auto_select="false" data-itp_support="true" data-hd="' + ALLOWED_HD + '"></div>' +
+'<div class="lex-gate-btn-wrap"><div class="g_id_signin" data-type="standard" data-shape="rectangular" data-theme="outline" data-text="signin_with" data-size="large" data-logo_alignment="left"></div></div>' +
+'<p id="lex-gate-error"></p>' +
+'<p class="lex-gate-foot">Restricted to clayesmore.com accounts.<br>If you can\'t sign in, contact IT.</p>' +
+'</div></div>' +
+'<script src="https://accounts.google.com/gsi/client" async defer><\/script>' +
+'</body></html>';
+
+  document.open();
+  document.write(gateHtml);
+  document.close();
+})();
+</script>
+<!-- ====== END LEX SSO GATE v1 ====== -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
