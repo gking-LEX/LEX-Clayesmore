@@ -498,7 +498,7 @@ label.field-label{font-size:11px;font-weight:500;color:var(--text2);display:bloc
 <script>
 // Version freshness check — warns if browser is serving a cached old version
 (function(){
-  var CURRENT_VERSION = 'v82';
+  var CURRENT_VERSION = 'v83.1';
   var VERSION_KEY = 'lex-last-known-version';
   var LOAD_TIME_KEY = 'lex-last-load-time';
   var now = Date.now();
@@ -562,7 +562,7 @@ setTimeout(function(){
     '</ul>' +
     '<p style="margin-top:20px;"><button onclick="(function(){try{Object.keys(localStorage).filter(function(k){return k.indexOf(\'lex\')===0;}).forEach(function(k){localStorage.removeItem(k);});}catch(e){}location.reload(true);})()" style="background:#dc2626;color:#fff;border:none;padding:8px 16px;border-radius:4px;font-size:14px;cursor:pointer;">Clear cache &amp; reload</button> ' +
     '<button onclick="location.reload(true)" style="background:#fff;color:#1f2937;border:1px solid #ccc;padding:8px 16px;border-radius:4px;font-size:14px;cursor:pointer;margin-left:8px;">Just reload</button></p>' +
-    '<p style="margin-top:16px;font-size:12px;color:#6b7280;">Open the browser console (F12) for technical details. Loaded version: <strong>v82</strong>.</p>' +
+    '<p style="margin-top:16px;font-size:12px;color:#6b7280;">Open the browser console (F12) for technical details. Loaded version: <strong>v83.1</strong>.</p>' +
     '</div>';
 }, 3000);
 
@@ -3825,7 +3825,7 @@ function renderTopbar(){
   const reminders=getAdminReminders();
   const bar=h("div",{className:"topbar"},
     h("img",{src:LEX_LOGO_DATA_URI,className:"logo-img",alt:"Clayesmore LEX",style:{height:"30px",width:"auto",flexShrink:0}}),
-    h("div",{className:"logo-text"},"System ",h("span",null,SYSTEM_YEAR_LABEL+" · v82")),
+    h("div",{className:"logo-text"},"System ",h("span",null,SYSTEM_YEAR_LABEL+" · v83.1")),
     h("div",{className:"topbar-meta"},`${staff.length} staff · ${acts.length} activities · ${pupils.length} pupils · ${formData.length} form responses`),
     h("div",{className:"topbar-right"},
       h("span",{id:"presence-dots",style:{display:"inline-flex",alignItems:"center",gap:"1px"}}),
@@ -4489,6 +4489,9 @@ function renderActCal(el){
     h("th",{style:{minWidth:"48px"}},"Cost"),
     h("th",{style:{minWidth:"26px",textAlign:"center"}},"🚌")
   );
+  // v83: find the first S2 date column (in chronological order) so we can draw
+  // a faint divider between S1 and S2 dates in the grid.
+  let _s1s2Boundary=-1;{let seenS1=false;sortedDateIndices().forEach(di=>{const hh=dates[di]&&dates[di].half;if(hh==="S1")seenS1=true;if(_s1s2Boundary===-1&&seenS1&&hh==="S2")_s1s2Boundary=di;});}
   sortedDateIndices().forEach(di=>{ const d=dates[di];
     const isSpecialDay=d.note&&(d.note.toLowerCase().includes("open")||d.note.toLowerCase().includes("morning")||d.note.toLowerCase().includes("exeat")||d.note.toLowerCase().includes("prep")||d.note.toLowerCase().includes("event")||d.note.toLowerCase().includes("speech")||d.note.toLowerCase().includes("sports"));
     // Check if any activity is scheduled on this date AND on adjacent special dates (clash warning)
@@ -4499,7 +4502,7 @@ function renderActCal(el){
     if(d.note){
       thContent.push(h("div",{title:d.note,style:{fontSize:"9px",color:"var(--amber)",marginTop:"2px",cursor:"help"}},isSpecialDay?"⚠️ "+d.note.slice(0,18)+(d.note.length>18?"…":""):"📌 "+d.note.slice(0,14)+(d.note.length>14?"…":"")));
     }
-    hr.appendChild(h("th",{style:{minWidth:"110px",textAlign:"center",verticalAlign:"bottom",background:isSpecialDay?"var(--amber-soft, #fff9e6)":""}},
+    hr.appendChild(h("th",{style:{minWidth:"110px",textAlign:"center",verticalAlign:"bottom",background:isSpecialDay?"var(--amber-soft, #fff9e6)":"",borderLeft:(_s1s2Boundary===di?"2px solid var(--border2)":"")}},
       ...thContent
     ));
   });
@@ -4553,7 +4556,7 @@ function renderActCal(el){
       // Use per-date count for accurate per-date display
       const allocHere=countByActDate[a.n+"|"+di]||0;
       const hasActivity=on||perDateCount>0;
-      const td=h("td",{style:{verticalAlign:"top",padding:"4px 5px",background:on?(col+"0d"):perDateCount>0?"var(--purple-soft)":"transparent"}});
+      const td=h("td",{style:{verticalAlign:"middle",textAlign:"center",padding:"4px 5px",background:on?(col+"0d"):perDateCount>0?"var(--purple-soft)":"transparent",borderLeft:(_s1s2Boundary===di?"2px solid var(--border2)":"")}});
       if(hasActivity){
         const staffOnDate=getActStaffOnDate(a.n,di);
         if(staffOnDate.length>0){
@@ -10250,8 +10253,27 @@ function renderAdminDates(el){
   const addCard=h("div",{className:"card card-pad",style:{maxWidth:"440px"}});
   addCard.appendChild(h("div",{style:{fontWeight:600,marginBottom:"10px"}},"Add Date"));
   const g=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px"}});
+  // v83.1: auto-generate a consistent label from the entered date (still editable).
+  // Format: "Sat 25 Apr 2026". Only auto-fills while the label is empty or was
+  // itself auto-generated, so a manually-typed label is never overwritten.
+  const _MON3=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const _DOW3=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  function _autoLabelFromDate(v){
+    const m=String(v||"").trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if(!m)return "";
+    const day=parseInt(m[1],10),mon=parseInt(m[2],10),yr=parseInt(m[3],10);
+    if(mon<1||mon>12||day<1||day>31)return "";
+    const probe=new Date(yr,mon-1,day);
+    if(probe.getFullYear()!==yr||probe.getMonth()!==mon-1||probe.getDate()!==day)return "";
+    return _DOW3[probe.getDay()]+" "+day+" "+_MON3[mon-1]+" "+yr;
+  }
+  let _labelAuto=true; // tracks whether current label value is auto-generated
   const di=h("input",{type:"text",placeholder:"25/04/2026",style:{width:"100%"}});
-  const li=h("input",{type:"text",placeholder:"Sat 25 Apr",style:{width:"100%"}});
+  const li=h("input",{type:"text",placeholder:"Sat 25 Apr 2026",style:{width:"100%"}});
+  di.addEventListener("input",()=>{
+    if(_labelAuto){ const lab=_autoLabelFromDate(di.value); if(lab){ li.value=lab; } }
+  });
+  li.addEventListener("input",()=>{ _labelAuto=(li.value===""||li.value===_autoLabelFromDate(di.value)); });
   const hs=h("select",{style:{width:"100%"}});HALF_TERMS.forEach(v=>hs.appendChild(h("option",{value:v},halfLabel(v))));
   const ni=h("input",{type:"text",placeholder:"Optional note",style:{width:"100%"}});
   [[di,"Date (DD/MM/YYYY)"],[li,"Label"],[hs,"Half-term"],[ni,"Note"]].forEach(([inp,lbl])=>{g.appendChild(h("div",null,h("label",{className:"field-label"},lbl),inp));});
@@ -10788,7 +10810,7 @@ function renderPublicTimetable(){
     h("img",{src:LEX_LOGO_DATA_URI,className:"logo-img",alt:"LEX",style:{height:"30px",width:"auto",flexShrink:0}}),
     h("div",null,
       h("div",{style:{fontWeight:700,fontSize:"15px"}},"LEX — Summer 2026"),
-      h("div",{style:{fontSize:"11px",color:"var(--text3)"}},"Clayesmore Saturday Enrichment Programme")
+      h("div",{style:{fontSize:"11px",color:"var(--text3)"}},"Clayesmore Saturday Enrichment Programme · "+CURRENT_VERSION)
     ),
     lastSyncTime?h("div",{style:{marginLeft:"auto",fontSize:"10px",color:"var(--text3)"}},"Updated: "+lastSyncTime.toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})):null,
     window.__LEX_USER__?h("span",{style:{fontSize:"10px",color:"var(--text3)",whiteSpace:"nowrap",marginLeft:lastSyncTime?"0":"auto"},title:"Signed in via Clayesmore Google account. Close the tab to sign out."},window.__LEX_USER__.email):null
@@ -11139,7 +11161,7 @@ function renderStaffView(){
   const app=document.getElementById("app");app.innerHTML="";
   app.appendChild(h("div",{style:{background:"var(--surface)",borderBottom:"1px solid var(--border)",padding:"12px 16px",display:"flex",alignItems:"center",gap:"10px",position:"sticky",top:0,zIndex:50}},
     h("img",{src:LEX_LOGO_DATA_URI,className:"logo-img",alt:"LEX",style:{height:"30px",width:"auto",flexShrink:0}}),
-    h("div",null,h("div",{style:{fontWeight:700,fontSize:"14px"}},"LEX Staff Portal"),h("div",{style:{fontSize:"10px",color:"var(--text3)"}},"Clayesmore Summer 2026")),
+    h("div",null,h("div",{style:{fontWeight:700,fontSize:"14px"}},"LEX Staff Portal"),h("div",{style:{fontSize:"10px",color:"var(--text3)"}},"Clayesmore Summer 2026 · "+CURRENT_VERSION)),
     h("span",{id:"presence-dots",style:{display:"inline-flex",alignItems:"center",gap:"1px",marginLeft:"auto"}}),
     h("button",{className:"btn btn-success btn-sm",style:{padding:"5px 12px",fontSize:"12px",fontWeight:700,whiteSpace:"nowrap",marginRight:"6px"},
       title:"Save your register marks to the cloud now — click after taking a register",
