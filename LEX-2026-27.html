@@ -710,6 +710,7 @@ function gc(n){return COLORS[Math.abs([...String(n||"")].reduce((a,c)=>a+c.charC
 
 // Robust pupil matching: normalise emails for comparison
 function normEmail(e){return(e||"").trim().toLowerCase().replace(/\s+/g,"");}
+function _lexUserAcro(){if(!window.__LEX_USER__)return null;const ne=normEmail(window.__LEX_USER__.email);const s=staff.find(sm=>normEmail(sm.email)===ne);return s?s.c:null;}
 
 // ── Default pupil ordering (v50) ──────────────────────────────
 // Year group ascending (9,10,11,12,13) then surname then forename.
@@ -962,7 +963,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v84';
+const CURRENT_VERSION = 'v85';
 const SYSTEM_YEAR_LABEL = "2026-27";
 const PLANNING_YEAR_MODE = true;
 const LEX_LOGO_DATA_URI = "data:image/png;base64,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";
@@ -3928,7 +3929,6 @@ function _renderAdminSubTo(container){
   else if(adminSub==="bulk")renderAdminBulk(container);
   else if(adminSub==="term")renderAdminNewTerm(container);
   else if(adminSub==="sync")renderAdminSync(container);
-  else if(adminSub==="sheetsync")renderAdminSheetSync(container);
   else if(adminSub==="log")renderAdminLog(container);
   else if(adminSub==="consent")renderConsentAudit(container);
   else if(adminSub==="weighting")renderAdminWeighting(container);
@@ -4015,7 +4015,7 @@ function renderTopbar(){
       h("button",{style:{background:"transparent",border:"1px solid var(--border2)",borderRadius:"var(--radius-sm)",padding:"4px 9px",cursor:"pointer",fontSize:"14px",color:"var(--text2)"},title:"Preferences",onClick:togglePrefPanel},"🎨"),
       h("a",{href:"?view=timetable",target:"_blank",style:{fontSize:"11px",color:"var(--purple)",textDecoration:"none",padding:"4px 8px",border:"1px solid var(--purple)",borderRadius:"4px",whiteSpace:"nowrap"}},"Pupil view ↗"),
       h("a",{href:"#staff",style:{fontSize:"11px",color:"var(--accent)",textDecoration:"none",padding:"4px 8px",border:"1px solid var(--accent)",borderRadius:"4px",whiteSpace:"nowrap"}},"Staff view ↗"),
-      window.__LEX_USER__?h("span",{style:{fontSize:"10px",color:"var(--text3)",whiteSpace:"nowrap",marginLeft:"4px"},title:"Signed in via Clayesmore Google account. Close the tab to sign out."},window.__LEX_USER__.email):null,
+      window.__LEX_USER__?h("span",{style:{fontSize:"10px",color:"var(--text3)",whiteSpace:"nowrap",marginLeft:"4px"},title:window.__LEX_USER__.email+" — close the tab to sign out"},_lexUserAcro()||window.__LEX_USER__.email):null,
       (function(){
         // v78: backup-age indicator. Click to scroll to the backup card.
         try{
@@ -4160,19 +4160,22 @@ function renderOverview(el,opts){
   tbl.appendChild(thead);
 
   const tbody=h("tbody");
+  let _ovPrevHalf=null;
   rows.forEach(r=>{
+    const _ovHalfBnd=_ovPrevHalf!==null&&r.date.half!==_ovPrevHalf;
+    const _ovHtBdr=_ovHalfBnd?{borderTop:"2px solid var(--text2)"}:{};
     const tr=h("tr");
     if(r.firstInTerm){
-      tr.appendChild(h("td",{rowspan:String(r.termRowSpan),style:_ovTdTerm()},r.term));
+      tr.appendChild(h("td",{rowspan:String(r.termRowSpan),style:{..._ovTdTerm(),..._ovHtBdr}},r.term));
     }
-    tr.appendChild(h("td",{style:_ovTdNum()},String(r.week)));
-    tr.appendChild(h("td",{style:_ovTdNum()},r.date.label||r.date.full));
+    tr.appendChild(h("td",{style:{..._ovTdNum(),..._ovHtBdr}},String(r.week)));
+    tr.appendChild(h("td",{style:{..._ovTdNum(),..._ovHtBdr}},r.date.label||r.date.full));
     const cols=["y9a","y9b","y10a","y10b","y11a","y11b","y12a","y12b","y13a","y13b","dofe"];
     const dKey=r.date.full;
     const _canon=_ovCanonKey(dKey);
     cols.forEach(k=>{
       const cur=(_ovResolved[_canon]||{})[k]||"";
-      const td=h("td",{style:_ovTdCell()});
+      const td=h("td",{style:{..._ovTdCell(),..._ovHtBdr}});
       if(editable){
         const inp=h("input",{type:"text",value:cur,style:_ovInput(),
           onFocus:e=>{e.target.style.background="var(--surface2)";e.target.style.borderColor="var(--accent)";},
@@ -4223,6 +4226,7 @@ function renderOverview(el,opts){
       }
       tr.appendChild(td);
     });
+    _ovPrevHalf=r.date.half;
     tbody.appendChild(tr);
   });
   tbl.appendChild(tbody);
@@ -4667,36 +4671,61 @@ function renderActCal(el){
 
   if(actSub==="capacity"){renderCapacity(el);return;}
 
-  const wrap=h("div",{className:"table-wrap scroll-table"});
-  const tbl=h("table",null);
-  const hr=h("tr",null,
-    h("th",{className:"sticky-lt",style:{minWidth:"180px"}},"Activity"),
-    h("th",{style:{minWidth:"46px",textAlign:"center"}},"Cap"),
-    h("th",{style:{minWidth:"52px",textAlign:"center"}},"Req'd"),
-    h("th",{style:{minWidth:"100px"}},"Venue"),
-    h("th",{style:{minWidth:"48px"}},"Sess"),
-    h("th",{style:{minWidth:"48px"}},"Cost"),
-    h("th",{style:{minWidth:"26px",textAlign:"center"}},"🚌")
-  );
-  // v83: find the first S2 date column (in chronological order) so we can draw
-  // a faint divider between S1 and S2 dates in the grid.
-  let _s1s2Boundary=-1;{let seenS1=false;sortedDateIndices().forEach(di=>{const hh=dates[di]&&dates[di].half;if(hh==="S1")seenS1=true;if(_s1s2Boundary===-1&&seenS1&&hh==="S2")_s1s2Boundary=di;});}
-  sortedDateIndices().forEach(di=>{ const d=dates[di];
-    const isSpecialDay=d.note&&(d.note.toLowerCase().includes("open")||d.note.toLowerCase().includes("morning")||d.note.toLowerCase().includes("exeat")||d.note.toLowerCase().includes("prep")||d.note.toLowerCase().includes("event")||d.note.toLowerCase().includes("speech")||d.note.toLowerCase().includes("sports"));
-    // Check if any activity is scheduled on this date AND on adjacent special dates (clash warning)
-    // Warning badge: show if date has a note suggesting a school-wide event
-    const thContent=[];
-    thContent.push(h("div",{style:{fontWeight:600}},d.label.replace("Sat ","")));
-    thContent.push(h("div",{style:{fontSize:"9px",color:"var(--text3)"}},halfLabelShort(d.half)));
-    if(d.note){
-      thContent.push(h("div",{title:d.note,style:{fontSize:"9px",color:"var(--amber)",marginTop:"2px",cursor:"help"}},isSpecialDay?"⚠️ "+d.note.slice(0,18)+(d.note.length>18?"…":""):"📌 "+d.note.slice(0,14)+(d.note.length>14?"…":"")));
-    }
-    hr.appendChild(h("th",{style:{minWidth:"110px",textAlign:"center",verticalAlign:"bottom",background:isSpecialDay?"var(--amber-soft, #fff9e6)":"",borderLeft:(_s1s2Boundary===di?"2px solid var(--border2)":"")}},
-      ...thContent
-    ));
+  // Group sorted date indices by half-term for column group headers
+  const _sortedDIs=sortedDateIndices();
+  const _htGroups=[];
+  _sortedDIs.forEach(di=>{
+    const hh=(dates[di]&&dates[di].half)||"";
+    if(!_htGroups.length||_htGroups[_htGroups.length-1].half!==hh)_htGroups.push({half:hh,dis:[di]});
+    else _htGroups[_htGroups.length-1].dis.push(di);
   });
-  tbl.appendChild(h("thead",null,hr));
+  // First date of every half-term group gets a left-border divider
+  const _htBoundary=new Set(_htGroups.map(g=>g.dis[0]));
 
+  const wrap=h("div",{className:"table-wrap scroll-table",style:{overflowX:"auto"}});
+  const tbl=h("table",null);
+
+  // ── Two-row thead ───────────────────────────────────────────────
+  // Row 1: fixed columns (rowspan=2) + half-term group labels + Notes (rowspan=2)
+  const _thFix=(w,extra)=>{const s={minWidth:w,padding:"3px 5px",fontWeight:600,fontSize:"11px",textAlign:"center",verticalAlign:"middle",whiteSpace:"nowrap",background:"var(--surface2)",borderBottom:"1px solid var(--border)"};return Object.assign(s,extra||{});};
+  const hr1=h("tr");
+  hr1.appendChild(h("th",{className:"sticky-lt",rowspan:"2",style:_thFix("130px",{textAlign:"left",zIndex:4})},"Activity"));
+  hr1.appendChild(h("th",{rowspan:"2",style:_thFix("28px")},"Type"));
+  hr1.appendChild(h("th",{rowspan:"2",style:_thFix("34px")},"Cap"));
+  hr1.appendChild(h("th",{rowspan:"2",style:_thFix("42px")},"Req\'d"));
+  hr1.appendChild(h("th",{rowspan:"2",style:_thFix("78px",{textAlign:"left"})},"Venue"));
+  hr1.appendChild(h("th",{rowspan:"2",style:_thFix("36px")},"Sess"));
+  hr1.appendChild(h("th",{rowspan:"2",style:_thFix("36px")},"Cost"));
+  hr1.appendChild(h("th",{rowspan:"2",style:_thFix("22px")},"🚌"));
+  _htGroups.forEach(g=>{
+    hr1.appendChild(h("th",{colspan:String(g.dis.length),style:{
+      textAlign:"center",fontSize:"9px",fontWeight:700,color:halfColor(g.half),
+      background:"var(--surface2)",borderLeft:"2px solid var(--border2)",
+      padding:"2px 5px",letterSpacing:"0.4px",whiteSpace:"nowrap",
+      borderBottom:"1px solid var(--border)"
+    }},halfLabelShort(g.half)));
+  });
+  hr1.appendChild(h("th",{rowspan:"2",style:_thFix("70px",{textAlign:"left"})},"Notes"));
+
+  // Row 2: individual date column headers
+  const hr2=h("tr");
+  _sortedDIs.forEach(di=>{
+    const d=dates[di];
+    const isSpecialDay=d.note&&(d.note.toLowerCase().includes("open")||d.note.toLowerCase().includes("morning")||d.note.toLowerCase().includes("exeat")||d.note.toLowerCase().includes("prep")||d.note.toLowerCase().includes("event")||d.note.toLowerCase().includes("speech")||d.note.toLowerCase().includes("sports"));
+    const thContent=[];
+    thContent.push(h("div",{style:{fontWeight:600,fontSize:"10px"}},d.label.replace("Sat ","")));
+    if(d.note){
+      thContent.push(h("div",{title:d.note,style:{fontSize:"8px",color:"var(--amber)",marginTop:"1px",cursor:"help"}},isSpecialDay?"⚠️ "+d.note.slice(0,16)+(d.note.length>16?"…":""):"📌 "+d.note.slice(0,12)+(d.note.length>12?"…":"")));
+    }
+    hr2.appendChild(h("th",{style:{
+      minWidth:"88px",textAlign:"center",verticalAlign:"bottom",padding:"2px 3px",
+      background:isSpecialDay?"var(--amber-soft, #fff9e6)":"",
+      borderLeft:_htBoundary.has(di)?"2px solid var(--border2)":""
+    }},...thContent));
+  });
+  tbl.appendChild(h("thead",null,hr1,hr2));
+
+  // ── tbody ──────────────────────────────────────────────────────
   const tbody=h("tbody",null);
   const sortedActs=[...acts].sort((a,b)=>a.n.localeCompare(b.n));
   const allocByActHalf=getAllocByActHalf();
@@ -4704,52 +4733,60 @@ function renderActCal(el){
 
   sortedActs.forEach(a=>{
     const col=gc(a.n);const tr=h("tr",null);
-    const nameTd=h("td",{className:"sticky-l",style:{fontWeight:600,verticalAlign:"top",padding:"6px 8px"}});
-    nameTd.appendChild(h("span",{style:{color:col}},a.n));
-    nameTd.appendChild(h("div",{style:{fontSize:"10px",color:"var(--text3)",fontWeight:400,marginTop:"1px"}},a.yg));
-    nameTd.appendChild(h("span",{className:"badge "+(a.type==="compulsory"?"badge-purple":"badge-blue"),style:{fontSize:"9px",marginTop:"2px"}},a.type==="compulsory"?"C":"Opt"));
+
+    // Activity name — sticky, badge moved to Type column
+    const nameTd=h("td",{className:"sticky-l",style:{fontWeight:600,verticalAlign:"top",padding:"3px 6px"}});
+    nameTd.appendChild(h("span",{style:{color:col,fontSize:"11px"}},a.n));
+    nameTd.appendChild(h("div",{style:{fontSize:"9px",color:"var(--text3)",fontWeight:400,marginTop:"1px"}},a.yg));
     tr.appendChild(nameTd);
 
-    // Cap + alloc summary
+    // Type (separate narrow column)
+    tr.appendChild(h("td",{style:{textAlign:"center",verticalAlign:"top",padding:"3px 2px"}},
+      h("span",{className:"badge "+(a.type==="compulsory"?"badge-purple":"badge-blue"),style:{fontSize:"8px"}},a.type==="compulsory"?"C":"O")
+    ));
+
+    // Cap + S1/S2 alloc sub-label
     const s1c=allocByActHalf[a.n+"|S1"]||0,s2c=allocByActHalf[a.n+"|S2"]||0;
-    const capCell=h("td",{style:{textAlign:"center",verticalAlign:"top",fontWeight:700}},a.cap?String(a.cap):"—");
-    if((s1c||s2c)&&a.cap)capCell.appendChild(h("div",{style:{fontSize:"9px",fontWeight:400,color:"var(--text3)"}},s1c+"/"+s2c));
+    const capCell=h("td",{style:{textAlign:"center",verticalAlign:"top",fontWeight:700,padding:"3px 3px",fontSize:"11px"}},a.cap?String(a.cap):"—");
+    if((s1c||s2c)&&a.cap)capCell.appendChild(h("div",{style:{fontSize:"8px",fontWeight:400,color:"var(--text3)"}},s1c+"/"+s2c));
     tr.appendChild(capCell);
 
-    // Staff required input with shortfall badge
+    // Staff required — narrower input
     const reqNeeded=a.staffReq||0;
     const allAssigned=[a.lead,...(a.staff||[])].filter(Boolean);
-    const reqCell=h("td",{style:{textAlign:"center",verticalAlign:"top"}});
+    const reqCell=h("td",{style:{textAlign:"center",verticalAlign:"top",padding:"3px 2px"}});
     const reqInp=h("input",{type:"number",value:String(reqNeeded),min:"0",max:"8",
-      style:{width:"52px",textAlign:"center",fontSize:"11px",boxSizing:"border-box",paddingRight:"16px"},
+      style:{width:"36px",textAlign:"center",fontSize:"11px",boxSizing:"border-box"},
       onInput:ev=>{a.staffReq=parseInt(ev.target.value)||0;saveAll();}});
     reqInp.classList.add("no-spinner");
     reqCell.appendChild(reqInp);
     if(reqNeeded>0){
       const diff=allAssigned.length-reqNeeded;
-      reqCell.appendChild(h("div",{style:{fontSize:"9px",marginTop:"2px",color:diff<0?"var(--red)":diff>0?"var(--amber)":"var(--green)",fontWeight:600}},
+      reqCell.appendChild(h("div",{style:{fontSize:"8px",marginTop:"2px",color:diff<0?"var(--red)":diff>0?"var(--amber)":"var(--green)",fontWeight:600}},
         diff<0?(diff+" short"):diff>0?("+"+diff):"✓"));
     }
     tr.appendChild(reqCell);
 
-    tr.appendChild(h("td",{style:{fontSize:"11px",color:"var(--text2)",verticalAlign:"top"}},a.v||"—"));
-    tr.appendChild(h("td",{style:{verticalAlign:"top"}},h("span",{className:a.sess!=="A+B"?"badge badge-purple":"badge badge-blue"},a.sess||"A+B")));
-    tr.appendChild(h("td",{style:{verticalAlign:"top"}},a.cost==="FOC"?h("span",{className:"badge badge-green"},"FOC"):h("span",{style:{fontWeight:600}},"£"+a.cost)));
-    tr.appendChild(h("td",{style:{textAlign:"center",verticalAlign:"top"}},a.mb?"🚌":""));
+    tr.appendChild(h("td",{style:{fontSize:"10px",color:"var(--text2)",verticalAlign:"top",padding:"3px 4px"}},a.v||"—"));
+    tr.appendChild(h("td",{style:{verticalAlign:"top",padding:"3px 2px"}},h("span",{className:a.sess!=="A+B"?"badge badge-purple":"badge badge-blue",style:{fontSize:"9px"}},a.sess||"A+B")));
+    tr.appendChild(h("td",{style:{verticalAlign:"top",padding:"3px 2px",fontSize:"10px"}},a.cost==="FOC"?h("span",{className:"badge badge-green",style:{fontSize:"8px"}},"FOC"):h("span",{style:{fontWeight:600}},"£"+a.cost)));
+    tr.appendChild(h("td",{style:{textAlign:"center",verticalAlign:"top",padding:"3px 2px",fontSize:"11px"}},a.mb?"🚌":""));
 
-    sortedDateIndices().forEach(di=>{
+    // Date columns
+    _sortedDIs.forEach(di=>{
       const on=a.di.includes(di);
-      const half=dates[di]?dates[di].half:null;
-      // Check for per-date overrides pointing to this activity on this date
       const perDateCount=Object.entries(allocDateOverrides).filter(([k,v])=>k.startsWith(di+"|")&&v===a.n).length;
-      // Use per-date count for accurate per-date display
       const allocHere=countByActDate[a.n+"|"+di]||0;
       const hasActivity=on||perDateCount>0;
-      const td=h("td",{style:{verticalAlign:"middle",textAlign:"center",padding:"4px 5px",background:on?(col+"0d"):perDateCount>0?"var(--purple-soft)":"transparent",borderLeft:(_s1s2Boundary===di?"2px solid var(--border2)":"")}});
+      const td=h("td",{style:{
+        verticalAlign:"middle",textAlign:"center",padding:"2px 3px",
+        background:on?(col+"0d"):perDateCount>0?"var(--purple-soft)":"transparent",
+        borderLeft:_htBoundary.has(di)?"2px solid var(--border2)":""
+      }});
       if(hasActivity){
         const staffOnDate=getActStaffOnDate(a.n,di);
         if(staffOnDate.length>0){
-          const div=h("div",{style:{fontSize:"9px",fontFamily:"var(--mono)",lineHeight:"1.6"}});
+          const div=h("div",{style:{fontSize:"9px",fontFamily:"var(--mono)",lineHeight:"1.5"}});
           staffOnDate.forEach(sc=>{
             div.appendChild(h("span",{style:{display:"inline-block",marginRight:"2px",
               fontWeight:sc===a.lead?700:400,color:sc===a.lead?"var(--text)":"var(--text3)"}},sc));
@@ -4758,7 +4795,6 @@ function renderActCal(el){
         } else if(on){
           td.appendChild(h("div",{style:{color:"var(--amber)",fontSize:"9px",fontWeight:600}},"No staff"));
         }
-        // Show count if pupils are allocated — clickable for pupil list
         if(allocHere>0){
           const capStr=a.cap>0?("/"+a.cap):"";
           const pct=a.cap>0?allocHere/a.cap:0;
@@ -4794,11 +4830,16 @@ function renderActCal(el){
       }
       tr.appendChild(td);
     });
+
+    // Notes — rightmost column
+    tr.appendChild(h("td",{style:{fontSize:"10px",color:"var(--text3)",verticalAlign:"top",padding:"3px 5px"}},(a.notes||"")));
+
     tbody.appendChild(tr);
   });
   tbl.appendChild(tbody);wrap.appendChild(tbl);el.appendChild(wrap);
-  el.appendChild(h("div",{style:{fontSize:"11px",color:"var(--text3)",marginTop:"6px"}},"Bold code=lead. Cap cell shows S1 alloc / S2 alloc below. Date cells show per-date pupil count. Req\'d: enter target staffing; shows shortfall/excess."));
+  el.appendChild(h("div",{style:{fontSize:"11px",color:"var(--text3)",marginTop:"6px"}},"Bold code=lead. Cap cell shows S1/S2 alloc below. Date cells show per-date pupil count. Req\'d: enter target staffing; shows shortfall/excess. Half-term groups shown in column headers."));
 }
+
 
 
 function renderCapacity(el){
@@ -9903,7 +9944,7 @@ function renderAdmin(el){
     // Setup
     [{id:"activities",l:"Activities"},{id:"staff",l:"Staff"},{id:"dates",l:"Dates"},{id:"pupils",l:"👥 Pupils"},{id:"parents",l:"👨‍👩‍👧 Parents"}],
     // Operations
-    [{id:"bulk",l:"📥 Bulk Import"},{id:"term",l:"🔄 New Term"},{id:"sync",l:"☁ Cloud Sync"},{id:"sheetsync",l:"📊 Sheet Sync"}],
+    [{id:"bulk",l:"📥 Bulk Import"},{id:"term",l:"🔄 New Term"},{id:"sync",l:"☁ Cloud Sync"}],
     // Reference
     [{id:"weighting",l:"⚖ Weighting"},{id:"log",l:"📋 Activity Log"},{id:"consent",l:"✓ Consent Audit"},{id:"help",l:"📖 Form Guide"}]
   ];
@@ -10388,56 +10429,76 @@ function renderAdminDates(el){
     h("div",{style:{fontWeight:600}},dates.length+" term dates")
   ));
   el.appendChild(h("div",{className:"alert alert-info",style:{marginBottom:"12px",fontSize:"12px"}},"ℹ Each half-term (A1, A2, Sp1, Sp2, S1, S2, LEX Week) is an independent allocation period. Set each date's half-term using the dropdown on its card below. LEX Week dates must NOT be labelled S2 — they use separate allocations."));
-  const dw=h("div",{style:{display:"flex",gap:"10px",flexWrap:"wrap",marginBottom:"20px"}});
-  // v71: display-only chronological sort — iterate indices in sorted order,
-  // but `i` is still the REAL di so every handler (delete, note, half, the
-  // _touchedDateIdxs tracking) continues to reference the stored index.
+  // Compact table — one row per date, all columns inline-editable
+  const _dtCellSt={padding:"4px 6px",borderBottom:"1px solid var(--border)",verticalAlign:"middle"};
+  const _dtInpSt={width:"100%",fontSize:"12px",padding:"3px 5px",border:"1px solid transparent",background:"transparent",boxSizing:"border-box",fontFamily:"inherit",color:"inherit"};
+  function _dtFocus(e,i){e.target.style.background="var(--surface2)";e.target.style.borderColor="var(--accent)";_touchedDateIdxs.add(String(i));}
+  function _dtBlur(e,i){e.target.style.background="transparent";e.target.style.borderColor="transparent";setTimeout(()=>{_touchedDateIdxs.delete(String(i));},8000);}
+  const tbl=h("table",{style:{width:"100%",borderCollapse:"collapse",marginBottom:"20px",fontSize:"12px"}});
+  const thead=h("thead");
+  const thr=h("tr");
+  ["Date","Half-term","Label","Note",""].forEach((col,ci)=>{
+    thr.appendChild(h("th",{style:{padding:"5px 8px",fontWeight:600,textAlign:"left",borderBottom:"2px solid var(--border)",color:"var(--text2)",whiteSpace:"nowrap",width:ci===4?"32px":undefined}},col));
+  });
+  thead.appendChild(thr);tbl.appendChild(thead);
+  const tbody=h("tbody");
+  // v71: display-only chronological sort — `i` is still the REAL di so every
+  // handler (delete, field edits, _touchedDateIdxs) references the stored index.
   sortedDateIndices().forEach(i=>{
     const d=dates[i];
-    const c=h("div",{className:"card card-pad",style:{minWidth:"150px",position:"relative"}});
-    c.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px"}},d.label));
-    c.appendChild(h("div",{className:"badge "+halfBadge(d.half),style:{marginTop:"4px"}},halfLabel(d.half)));
-    if(d.note)c.appendChild(h("div",{style:{fontSize:"10px",color:"var(--amber)",marginTop:"4px"}},d.note));
-    // v70: was onInput + per-keystroke saveAll — every character queued a
-    // cloud push, and any pull arriving between keystrokes (auto-refresh or
-    // a concurrent admin) clobbered the in-progress note via the wholesale
-    // dates= replace in loadFromSupabase. Now commit on blur/Enter and
-    // protect this index from concurrent cloud pulls while focused.
-    const _noteIdxStr=String(i);
-    c.appendChild(h("input",{value:d.note||"",placeholder:"Add note…",style:{width:"100%",marginTop:"8px",fontSize:"11px"},
-      onFocus:()=>{_touchedDateIdxs.add(_noteIdxStr);},
-      onKeyDown:ev=>{if(ev.key==="Enter"){ev.target.blur();}},
+    const tr=h("tr");
+    // Date (full)
+    const fullInp=h("input",{type:"text",value:d.full,style:Object.assign({},_dtInpSt),
+      onFocus:e=>{_dtFocus(e,i);},
+      onKeyDown:ev=>{if(ev.key==="Enter")ev.target.blur();},
       onBlur:ev=>{
-        const newVal=ev.target.value;
-        if((d.note||"")!==newVal){d.note=newVal;saveAll();}
-        // release protection shortly after, giving the debounced cloud write
-        // time to flush so a subsequent pull sees our value, not stale cloud.
-        setTimeout(()=>{_touchedDateIdxs.delete(_noteIdxStr);},8000);
+        _dtBlur(ev,i);
+        const v=ev.target.value.trim();
+        if((d.full||"")===v)return;
+        const m=v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+        if(!m){toast("Date must be DD/MM/YYYY (e.g. 25/04/2026)","err");ev.target.value=d.full;return;}
+        const day=parseInt(m[1],10),mon=parseInt(m[2],10),yr=parseInt(m[3],10);
+        if(yr<2020||yr>2100||mon<1||mon>12||day<1||day>31){toast("Date out of range","err");ev.target.value=d.full;return;}
+        const probe=new Date(yr,mon-1,day);
+        if(probe.getFullYear()!==yr||probe.getMonth()!==mon-1||probe.getDate()!==day){toast("Not a real date (e.g. 31 Feb)","err");ev.target.value=d.full;return;}
+        d.full=String(day).padStart(2,"0")+"/"+String(mon).padStart(2,"0")+"/"+yr;saveAll();
       }
-    }));
-    // Editable half-term selector
-    // v70: protect this index across the saveAll->render gap. render() flushes
-    // the new value to DOM, but the half-second between save and the next
-    // auto-refresh pull is still a race window without explicit protection.
-    const halfSel=h("select",{style:{width:"100%",marginTop:"4px",fontSize:"11px"},onChange:e=>{
-      _touchedDateIdxs.add(String(i));
-      d.half=e.target.value;saveAll();
-      setTimeout(()=>{_touchedDateIdxs.delete(String(i));},8000);
-      render();
+    });
+    const tdFull=h("td",{style:Object.assign({},_dtCellSt)});tdFull.appendChild(fullInp);tr.appendChild(tdFull);
+    // Half-term
+    const halfSel=h("select",{style:{fontSize:"12px",padding:"3px 4px",border:"1px solid var(--border)",background:"var(--surface)",width:"100%",boxSizing:"border-box"},onChange:e=>{
+      _touchedDateIdxs.add(String(i));d.half=e.target.value;saveAll();
+      setTimeout(()=>{_touchedDateIdxs.delete(String(i));},8000);render();
     }});
     HALF_TERMS.forEach(v=>{const o=h("option",{value:v},halfLabel(v));if(d.half===v)o.selected=true;halfSel.appendChild(o);});
-    // If current half doesn't match any preset, add it as option
     if(!HALF_TERMS.includes(d.half)){const o=h("option",{value:d.half},d.half);o.selected=true;halfSel.appendChild(o);}
-    c.appendChild(halfSel);
-    c.appendChild(h("button",{className:"btn btn-danger btn-xs",style:{position:"absolute",top:"8px",right:"8px"},onClick:()=>{
+    const tdHalf=h("td",{style:Object.assign({},_dtCellSt)});tdHalf.appendChild(halfSel);tr.appendChild(tdHalf);
+    // Label
+    const lblInp=h("input",{type:"text",value:d.label||"",style:Object.assign({},_dtInpSt),
+      onFocus:e=>{_dtFocus(e,i);},
+      onKeyDown:ev=>{if(ev.key==="Enter")ev.target.blur();},
+      onBlur:ev=>{_dtBlur(ev,i);const v=ev.target.value;if((d.label||"")!==v){d.label=v;saveAll();}}
+    });
+    const tdLbl=h("td",{style:Object.assign({},_dtCellSt)});tdLbl.appendChild(lblInp);tr.appendChild(tdLbl);
+    // Note (rightmost editable column)
+    const noteInp=h("input",{type:"text",value:d.note||"",placeholder:"—",style:Object.assign({},_dtInpSt),
+      onFocus:e=>{_dtFocus(e,i);},
+      onKeyDown:ev=>{if(ev.key==="Enter")ev.target.blur();},
+      onBlur:ev=>{_dtBlur(ev,i);const v=ev.target.value;if((d.note||"")!==v){d.note=v;saveAll();}}
+    });
+    const tdNote=h("td",{style:Object.assign({},_dtCellSt)});tdNote.appendChild(noteInp);tr.appendChild(tdNote);
+    // Delete
+    const tdDel=h("td",{style:Object.assign({},_dtCellSt,{textAlign:"center",width:"32px"})});
+    tdDel.appendChild(h("button",{className:"btn btn-danger btn-xs",onClick:()=>{
       if(!confirm("Remove "+d.label+"?"))return;
       acts.forEach(a=>{a.di=a.di.filter(x=>x!==i).map(x=>x>i?x-1:x);});
       const newSA={};Object.entries(sa).forEach(([k,v])=>{const[di,code]=k.split("|");const n=Number(di);if(n===i)return;newSA[(n>i?n-1:n)+"|"+code]=v;});
       sa=newSA;dates.splice(i,1);saveAll();render();
     }},"✕"));
-    dw.appendChild(c);
+    tr.appendChild(tdDel);
+    tbody.appendChild(tr);
   });
-  el.appendChild(dw);
+  tbl.appendChild(tbody);el.appendChild(tbl);
 
   const addCard=h("div",{className:"card card-pad",style:{maxWidth:"440px"}});
   addCard.appendChild(h("div",{style:{fontWeight:600,marginBottom:"10px"}},"Add Date"));
@@ -11002,7 +11063,7 @@ function renderPublicTimetable(){
       h("div",{style:{fontSize:"11px",color:"var(--text3)"}},"Clayesmore Saturday Enrichment Programme · "+CURRENT_VERSION)
     ),
     lastSyncTime?h("div",{style:{marginLeft:"auto",fontSize:"10px",color:"var(--text3)"}},"Updated: "+lastSyncTime.toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})):null,
-    window.__LEX_USER__?h("span",{style:{fontSize:"10px",color:"var(--text3)",whiteSpace:"nowrap",marginLeft:lastSyncTime?"0":"auto"},title:"Signed in via Clayesmore Google account. Close the tab to sign out."},window.__LEX_USER__.email):null
+    window.__LEX_USER__?h("span",{style:{fontSize:"10px",color:"var(--text3)",whiteSpace:"nowrap",marginLeft:lastSyncTime?"0":"auto"},title:window.__LEX_USER__.email+" — close the tab to sign out"},_lexUserAcro()||window.__LEX_USER__.email):null
   );
   app.appendChild(hdr);
 
@@ -11363,7 +11424,7 @@ function renderStaffView(){
       }
     },"💾 Save now"),
     h("a",{href:"#",style:{fontSize:"11px",color:"var(--text3)",textDecoration:"none",padding:"4px 8px",border:"1px solid var(--border)",borderRadius:"4px"}},"Admin ↗"),
-    window.__LEX_USER__?h("span",{style:{fontSize:"10px",color:"var(--text3)",whiteSpace:"nowrap"},title:"Signed in via Clayesmore Google account. Close the tab to sign out."},window.__LEX_USER__.email):null
+    window.__LEX_USER__?h("span",{style:{fontSize:"10px",color:"var(--text3)",whiteSpace:"nowrap"},title:window.__LEX_USER__.email+" — close the tab to sign out"},_lexUserAcro()||window.__LEX_USER__.email):null
   ));
 
   // Tab bar
@@ -12631,245 +12692,6 @@ function renderAdminSync(el){
   ));
 }
 
-function renderAdminSheetSync(el){
-  el.appendChild(h("div",{style:{fontWeight:700,fontSize:"14px",marginBottom:"4px"}},"📊 Staff Planning Sheet Sync"));
-  el.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text3)",marginBottom:"16px",lineHeight:"1.7"}},"Two-way sync between LEX and the LEX Master staff planning spreadsheet. The sheet has one row per staff member with A and B session columns for each LEX Saturday."));
-
-  // Column layout reference
-  const sheetInfo=h("div",{className:"card card-pad mb-16",style:{background:"var(--surface2)"}});
-  sheetInfo.appendChild(h("div",{style:{fontWeight:600,fontSize:"12px",marginBottom:"8px"}},"Sheet column structure (Summer term)"));
-  const colTable=h("table",{style:{fontSize:"11px",width:"100%"}});
-  colTable.appendChild(h("thead",null,h("tr",null,...["Column","Sheet col","Content"].map(x=>h("th",{style:{padding:"3px 8px",textAlign:"left"}},x)))));
-  const ctb=h("tbody",null);
-  [["Surname","A","Staff surname"],["Code","B","Staff code (e.g. NJA)"],["Role","C","Role"],["S1 25 Apr A","AU","Activity Session A"],["S1 25 Apr B","AV","Activity Session B"],["S1 9 May A","AX","Activity Session A"],["S1 9 May B","AY","Activity Session B"],["S1 16 May A","AZ","Activity Session A"],["S1 16 May B","BA","Activity Session B"],["S2 6 Jun A","BC","Activity Session A"],["S2 6 Jun B","BD","Activity Session B"],["S2 20 Jun A","BF","Activity Session A"],["S2 20 Jun B","BG","Activity Session B"],["S2 27 Jun A","BH","Activity Session A"],["S2 27 Jun B","BI","Activity Session B"]].forEach(([n,c,d])=>{
-    ctb.appendChild(h("tr",null,...[n,c,d].map(v=>h("td",{style:{padding:"3px 8px",borderBottom:"1px solid var(--border)"}},v))));
-  });
-  colTable.appendChild(ctb);sheetInfo.appendChild(colTable);el.appendChild(sheetInfo);
-
-  // Activity name mapping
-  // Maps sheet long names → LEX short names
-  // Built from known patterns; user can add custom mappings
-  const DEFAULT_NAME_MAP={
-    "Yr9 10 12 Bake-Off D":"Bake-Off","Yr9 10 12 Bake-Off W (Wolverton)":"Bake-Off",
-    "Yr9 10 12 Cookery (TCS)":"Cookery","Yr9 10 12 Art Studio (AR010":"Art Studio",
-    "Yr9 10 12 Pilates & Embroidery":"Pilates & Embroidery",
-    "Yr9 10 12 Cricket Nets":"Cricket Nets","Yr9 10 12 Bouldering":"Bouldering",
-    "Yr9 10 12 Music Practise":"Music Practice","Yr9 10 12 Golf":"Golf",
-    "Yr9 10 12 Polo":"Polo","Yr9 10 12 Watersports":"Watersports",
-    "Yr9 10 12 Stage Combat":"Stage Combat","Y12 13 Flying":"Flying",
-    "Yr9 10 12 Kayaking":"Kayaking","Yr9 10 12 Professional Make-up":"Professional Make-up",
-    "Y9 10 12 Outdoor Kitchen":"Outdoor Kitchen",
-    "Y13 Wellbeing":"Y13 Wellbeing","Y10 Creative":"Creative Day",
-    "Y11 THINK EAL (EAL)":"Y11 THINK","Y11 THINK English (EN01)":"Y11 THINK",
-    "Y11 THINK English (EN03)":"Y11 THINK","Y11 THINK Physics (PH02)":"Y11 THINK",
-    "Y11 THINK Chemistry (CH02)":"Y11 THINK","Y11 THINK Biology (BI02)":"Y11 THINK",
-    "Y11 THINK Biology (BI03)":"Y11 THINK","Y11 THINK Chemistry (CH01)":"Y11 THINK",
-    "Y12 Charity":"Y12 Charity","DofE":"DofE","Duty SLT":"SLT Duty",
-    "Open M":"Open Morning","GAMES":"GAMES","LEX Admin":"LEX Admin"
-  };
-  // Load user custom mappings
-  let customMap={};
-  try{const cm=localStorage.getItem("lex12-sheetnamemap");if(cm)customMap=JSON.parse(cm);}catch(e){}
-  const nameMap={...DEFAULT_NAME_MAP,...customMap};
-
-  function resolveSheetName(rawName){
-    if(!rawName||typeof rawName!=="string")return null;
-    const n=rawName.trim();
-    if(!n||n.startsWith("="))return null; // skip formula cells
-    // Exact map lookup
-    if(nameMap[n])return nameMap[n];
-    // Try partial: find LEX activity whose name appears in the sheet value
-    const found=acts.find(a=>n.toLowerCase().includes(a.n.toLowerCase())||a.n.toLowerCase().includes(n.toLowerCase()));
-    if(found)return found.n;
-    // Try designations
-    const desigMatch=getAllDesignations().find(d=>n.toLowerCase().includes(d.n.toLowerCase()));
-    if(desigMatch)return desigMatch.n;
-    return n; // fall back to raw name — will show as unmapped
-  }
-
-  // The 6 Summer dates and their column indices in the sheet
-  // Sheet uses 0-indexed: col46=S1D0A, 47=S1D0B, 49=S1D1A, 50=S1D1B, 51=S1D2A, 52=S1D2B
-  //                       col54=S2D0A, 55=S2D0B, 57=S2D1A, 58=S2D1B, 59=S2D2A, 60=S2D2B
-  const SHEET_DATE_COLS=[
-    {label:"S1 25 Apr",half:"S1",colA:46,colB:47},
-    {label:"S1 9 May", half:"S1",colA:49,colB:50},
-    {label:"S1 16 May",half:"S1",colA:51,colB:52},
-    {label:"S2 6 Jun", half:"S2",colA:54,colB:55},
-    {label:"S2 20 Jun",half:"S2",colA:57,colB:58},
-    {label:"S2 27 Jun",half:"S2",colA:59,colB:60},
-  ];
-
-  // ── IMPORT: Sheet → LEX ──
-  el.appendChild(h("hr",{className:"section-divider"}));
-  el.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"4px"}},"⬇ Import: Sheet → LEX"));
-  el.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text3)",marginBottom:"8px",lineHeight:"1.6"}},"Copy the staff data range from the spreadsheet (columns A–BI, rows 4 onwards — all staff rows) and paste below. LEX will read the Summer columns and update the staff calendar. Long activity names are mapped to LEX names automatically."));
-
-  const importTa=h("textarea",{rows:6,placeholder:"Paste rows from spreadsheet here (Tab-separated from Excel/Sheets)…",style:{marginBottom:"8px",fontFamily:"var(--mono)",fontSize:"11px"}});
-  el.appendChild(importTa);
-
-  const importResultDiv=h("div",null);
-  el.appendChild(importResultDiv);
-
-  el.appendChild(h("div",{className:"flex mb-16",style:{gap:"8px"}},
-    h("button",{className:"btn btn-primary",onClick:()=>{
-      importResultDiv.innerHTML="";
-      const raw=importTa.value.trim();
-      if(!raw){toast("Nothing pasted","err");return;}
-      const lines=raw.split("\n").filter(l=>l.trim());
-      const sep="\t"; // always TSV from Excel
-      let updated=0,skipped=0,unmapped=[];
-
-      lines.forEach(l=>{
-        const cols=l.split(sep);
-        if(cols.length<60)return; // not enough columns
-        const surname=(cols[0]||"").trim();
-        const code=(cols[1]||"").trim();
-        if(!surname&&!code)return;
-
-        // Find matching staff member
-        const staffMember=staff.find(s=>
-          s.c===code||
-          s.n.toLowerCase()===surname.toLowerCase()||
-          s.n.toLowerCase().startsWith(surname.toLowerCase())
-        );
-        if(!staffMember){skipped++;return;}
-
-        // Map the 6 date columns to LEX date indices
-        // LEX dates array: di=0→25Apr, di=1→9May(skipped!), di=2→16May etc
-        // Need to match by date label
-        const lexDateMap={}; // "S1 25 Apr" → di
-        dates.forEach((d,di)=>{
-          // Try to match by approximate date
-          const dstr=d.label||"";
-          if(dstr.includes("25 Apr")||dstr.includes("25Apr"))lexDateMap["S1 25 Apr"]=di;
-          else if(dstr.includes("9 May")||dstr.includes("9May"))lexDateMap["S1 9 May"]=di;
-          else if(dstr.includes("16 May")||dstr.includes("16May"))lexDateMap["S1 16 May"]=di;
-          else if(dstr.includes("6 Jun")||dstr.includes("6Jun"))lexDateMap["S2 6 Jun"]=di;
-          else if(dstr.includes("20 Jun")||dstr.includes("20Jun"))lexDateMap["S2 20 Jun"]=di;
-          else if(dstr.includes("27 Jun")||dstr.includes("27Jun"))lexDateMap["S2 27 Jun"]=di;
-        });
-
-        SHEET_DATE_COLS.forEach(({label,colA,colB})=>{
-          const di=lexDateMap[label];
-          if(di===undefined)return;
-          const rawA=(cols[colA]||"").trim();
-          const rawB=(cols[colB]||"").trim();
-          // Use A session value (A and B are often the same; for split activities A≠B)
-          const val=rawA||rawB;
-          if(!val||val.startsWith("="))return;
-          const mapped=resolveSheetName(val);
-          if(!mapped){return;}
-          // Check if it's an unrecognised value
-          const known=acts.some(a=>a.n===mapped)||getAllDesignations().some(d=>d.n===mapped);
-          if(!known&&!unmapped.includes(val))unmapped.push(val);
-          const key=di+"|"+staffMember.c;
-          saSet(key,mapped);
-        });
-        updated++;
-      });
-
-      saveAll();
-      logAction("SHEET_IMPORT","Updated "+updated+" staff from spreadsheet paste"+(skipped>0?", "+skipped+" not matched":""));
-
-      let msg=updated+" staff updated";
-      if(skipped>0)msg+=", "+skipped+" rows skipped (staff not found)";
-      importResultDiv.appendChild(h("div",{className:"alert alert-success"},msg));
-      if(unmapped.length>0){
-        importResultDiv.appendChild(h("div",{className:"alert alert-warn",style:{fontSize:"11px"}},"Unmapped sheet names (stored as-is, check staff calendar): "+unmapped.join(", ")+". Add custom mappings below to fix."));
-      }
-      toast("Sheet imported — check staff calendar");
-    }},"Import to LEX"),
-    h("button",{className:"btn btn-ghost btn-sm",onClick:()=>{importTa.value="";importResultDiv.innerHTML="";}},   "Clear")
-  ));
-
-  // ── EXPORT: LEX → Sheet ──
-  el.appendChild(h("hr",{className:"section-divider"}));
-  el.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"4px"}},"⬆ Export: LEX → Sheet"));
-  el.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text3)",marginBottom:"8px",lineHeight:"1.6"}},"Copies the full staff calendar as a TSV. Columns: Surname, Code, Role, then Session A and Session B for each LEX Saturday in order. Split activities (e.g. Pilates / Embroidery) produce different A and B values. Paste over the staff rows in the LEX Master spreadsheet Staff tab."));
-  el.appendChild(h("p",{style:{fontSize:"11px",color:"var(--amber)",marginBottom:"8px",lineHeight:"1.6"}},"⚠ The header row is included. Match the date column headers in the sheet to ensure the data aligns correctly — the export uses your LEX date labels in order."));
-
-  el.appendChild(h("button",{className:"btn btn-primary",onClick:()=>{
-    // Build header row matching sheet structure: Surname | Code | Role | [DateA | DateB] × n dates
-    const dateLabels=dates.map(d=>d.label);
-    const hdrRow=["Surname","Code","Role",...dateLabels.flatMap(l=>[l+" A",l+" B"])].join("\t");
-
-    const sortedStaff2=sortedStaff(staff);
-    const dataRows=sortedStaff2.map(s=>{
-      const cols=[s.n, s.c, s.r||""];
-      sortedDateIndices().forEach(di=>{
-        const sd=saGetDate(di,s.c);
-        if(sd&&sd.split){
-          // Session-specific entries — sa values are already component names (B1)
-          cols.push(sd.a?sd.a.act:"");
-          cols.push(sd.b?sd.b.act:"");
-        } else if(sd&&sd.a){
-          // Base key — for non-split activities, component name = activity name
-          const actName=sd.a.act;
-          const actObj=findActByName_exact(actName);
-          if(actObj&&isSplitAct(actObj)){
-            // Shouldn't happen after migration, but defensive
-            cols.push(actObj.sessA);cols.push(actObj.sessB);
-          } else {
-            cols.push(actName);cols.push(actName);
-          }
-        } else {
-          cols.push("");cols.push("");
-        }
-      });
-      return cols.join("\t");
-    });
-
-    const tsv=[hdrRow,...dataRows].join("\n");
-    navigator.clipboard.writeText(tsv).then(()=>{
-      toast("Copied "+dataRows.length+" staff rows — paste into sheet");
-      logAction("SHEET_EXPORT","Exported "+dataRows.length+" staff rows (calendar format) to clipboard");
-    });
-  }},"📋 Copy staff calendar TSV"));
-
-  // ── Custom name mapping ──
-  el.appendChild(h("hr",{className:"section-divider"}));
-  el.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"4px"}},"Name Mapping"));
-  el.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text3)",marginBottom:"8px",lineHeight:"1.6"}},"Map sheet activity names → LEX activity names. Defaults are pre-loaded. Add custom entries if your sheet uses different names."));
-
-  // Show current map
-  const mapCard=h("div",{className:"card mb-12"});
-  const mapTw=h("div",{style:{maxHeight:"200px",overflow:"auto"}});
-  const mapT=h("table",null);
-  mapT.appendChild(h("thead",null,h("tr",null,h("th",null,"Sheet name"),h("th",null,"LEX name"),h("th",null,"Source"),h("th",null,""))));
-  const mapTb=h("tbody",null);
-  Object.entries(nameMap).sort((a,b)=>a[0].localeCompare(b[0])).forEach(([sheetName,lexName])=>{
-    const isCustom=!!customMap[sheetName];
-    mapTb.appendChild(h("tr",null,
-      h("td",{style:{fontSize:"11px",fontFamily:"var(--mono)"}},sheetName),
-      h("td",{style:{fontSize:"11px",color:"var(--accent)"}},lexName),
-      h("td",null,h("span",{className:"badge "+(isCustom?"badge-purple":"badge-blue"),style:{fontSize:"9px"}},isCustom?"Custom":"Default")),
-      h("td",null,isCustom?h("button",{className:"btn btn-danger btn-xs",onClick:()=>{
-        delete customMap[sheetName];localStorage.setItem("lex12-sheetnamemap",JSON.stringify(customMap));
-        const m=document.querySelector(".main");if(m){m.innerHTML="";renderAdmin(m);}
-      }},"✕"):null)
-    ));
-  });
-  mapT.appendChild(mapTb);mapTw.appendChild(mapT);mapCard.appendChild(mapTw);el.appendChild(mapCard);
-
-  // Add custom mapping
-  const newSheetInp=h("input",{placeholder:"Sheet name (exact)",style:{width:"240px"}});
-  const newLexSel=h("select",{style:{width:"200px"}});
-  newLexSel.appendChild(h("option",{value:""},"LEX activity…"));
-  [...acts].sort((a,b)=>a.n.localeCompare(b.n)).forEach(a=>newLexSel.appendChild(h("option",{value:a.n},a.n)));
-  getAllDesignations().forEach(d=>newLexSel.appendChild(h("option",{value:d.n},d.n)));
-  el.appendChild(h("div",{className:"flex",style:{gap:"8px",flexWrap:"wrap"}},
-    newSheetInp,newLexSel,
-    h("button",{className:"btn btn-primary btn-sm",onClick:()=>{
-      const sn=newSheetInp.value.trim(),ln=newLexSel.value;
-      if(!sn||!ln){toast("Fill both fields","err");return;}
-      customMap[sn]=ln;localStorage.setItem("lex12-sheetnamemap",JSON.stringify(customMap));
-      toast("Mapping added");newSheetInp.value="";newLexSel.value="";
-      const m=document.querySelector(".main");if(m){m.innerHTML="";renderAdmin(m);}
-    }},"Add mapping")
-  ));
-}
-
-const PRIOR_DATA=[{"code":"NJA","surname":"Archer","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y13 THINK (A) Psych (PY01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"20 Sep","term":"Aut1","act":"Y13 THINK (B) Hsc (PY01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"11 Oct","term":"Aut1","act":"Y13 THINK (D) Psych (PY01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"8 Nov","term":"Aut2","act":"Y9 Tanzania (PY01)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"15 Nov","term":"Aut2","act":"Y9 MUN (UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Y9 Service - Breach","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y13 THINK (A) Psych (PY01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"31 Jan","term":"Spr1","act":"Y13 THINK (D) Psych (PY01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"7 Feb","term":"Spr1","act":"Yrs 10 & 12 Tanzania (The UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Y9 Forensics (The UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y11 Tanzania (JBLT)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":13.25},{"code":"DBl","surname":"Blackburn","sessions":[{"date":"8 Nov","term":"Aut2","act":"Y11 THINK DTech (D) (DT02)","sess":"A","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"7 Feb","term":"Spr1","act":"Y13 THINK Product Design (C) (DT01)","sess":"B","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"14 Mar","term":"Spr2","act":"Art Launch","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":2.5},{"code":"CEOB","surname":"Booth","sessions":[{"date":"20 Sep","term":"Aut1","act":"Yr10 11 12 Bake-Off D (Devine)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Yr10 11 12 Art Studio (AR01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Y10 Service - Breach","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"Yr 10 13 Art Studio (AR01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"Yr 10 13 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Y11 THINK ArtG (C) (AR02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"6 Dec","term":"Aut2","act":"Yr 10 13 Bouldering","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y11 Bake-Off D (Devine Kitchen)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y11 Bake-Off D (Devine Kitchen)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y9 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Y9 DT and Art (DT01, AR01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"28 Feb","term":"Spr2","act":"Yr10&12 Bake-Off D","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Y11 Service - Trees","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":19.0},{"code":"JLB","surname":"Briggs","sessions":[{"date":"8 Nov","term":"Aut2","act":"Y11 THINK FPN (D) (EN02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"15 Nov","term":"Aut2","act":"Y11 THINK FPN (B) (EN02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"29 Nov","term":"Aut2","act":"Y11 THINK FPN (C) (EN02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"6 Dec","term":"Aut2","act":"Y11 THINK FPN (A) (EN02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0}],"total":4.0},{"code":"IJB","surname":"Browse","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y13 THINK (A) PhotoA (P.Lab)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"20 Sep","term":"Aut1","act":"Y13 THINK (B) PhotoA (P.Lab)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"4 Oct","term":"Aut1","act":"Y13 THINK (C) PhotoA (P.Lab)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"8 Nov","term":"Aut2","act":"Prep","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"15 Nov","term":"Aut2","act":"Prep","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"29 Nov","term":"Aut2","act":"Prep","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"6 Dec","term":"Aut2","act":"Prep","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"10 Jan","term":"Spr1","act":"Y13 THINK (A) PhotoA (P.Lab)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"17 Jan","term":"Spr1","act":"Y13 THINK (B) PhotoA (P.Lab)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"31 Jan","term":"Spr1","act":"Y12 Careers ()","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Art Launch","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Prep","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0}],"total":13.0},{"code":"CLB","surname":"Burton","sessions":[{"date":"20 Sep","term":"Aut1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"4 Oct","term":"Aut1","act":"Y13 THINK Product Design (C) (DT01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"11 Oct","term":"Aut1","act":"Y11 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"11 Oct","term":"Aut1","act":"Y11 Elevate (UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"8 Nov","term":"Aut2","act":"Y9 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"8 Nov","term":"Aut2","act":"Y11 THINK DTech (D) (DT02)","sess":"B","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"15 Nov","term":"Aut2","act":"Y12 Wellbeing","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Y11 THINK DTech (C) (DT02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"6 Dec","term":"Aut2","act":"Y11 THINK DTech (A) (DT02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"10 Jan","term":"Spr1","act":"Y10 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"7 Feb","term":"Spr1","act":"Y13 THINK Product Design (C) (DT01)","sess":"A","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"7 Feb","term":"Spr1","act":"Open M","sess":"B","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"28 Feb","term":"Spr2","act":"Y11 Service - Orchard","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Y13 Basic DIY (Manor)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y13 Basic DIY (Manor)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75}],"total":13.75},{"code":"JRC","surname":"Carpenter","sessions":[{"date":"13 Sep","term":"Aut1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"20 Sep","term":"Aut1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"4 Oct","term":"Aut1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"11 Oct","term":"Aut1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"8 Nov","term":"Aut2","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"15 Nov","term":"Aut2","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"29 Nov","term":"Aut2","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"6 Dec","term":"Aut2","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"10 Jan","term":"Spr1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"17 Jan","term":"Spr1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"31 Jan","term":"Spr1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"7 Feb","term":"Spr1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"28 Feb","term":"Spr2","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"14 Mar","term":"Spr2","act":"Y11 SS (GE01, GE02)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"14 Mar","term":"Spr2","act":"Duty SLT","sess":"B","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"21 Mar","term":"Spr2","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0}],"total":15.25},{"code":"BSC","surname":"Cheung","sessions":[{"date":"20 Sep","term":"Aut1","act":"Y10 Service","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Y9 Exp Soc","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Y10 Service - Ranston","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"Y9 Tanzania (The UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"29 Nov","term":"Aut2","act":"Y12 Careers (UN)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"29 Nov","term":"Aut2","act":"Y12 Elevate (UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"6 Dec","term":"Aut2","act":"Y12 Careers (UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y12 Careers (UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y12 Careers (UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Yrs 10 & 12 Tanzania (UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"28 Feb","term":"Spr2","act":"Y11 Service - Ranston","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Y9 Forensics (The UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y11 Tanzania (PY02)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":17.25},{"code":"ALC","surname":"Cheverton","sessions":[{"date":"13 Sep","term":"Aut1","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"20 Sep","term":"Aut1","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"4 Oct","term":"Aut1","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"11 Oct","term":"Aut1","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"8 Nov","term":"Aut2","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"15 Nov","term":"Aut2","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"29 Nov","term":"Aut2","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"6 Dec","term":"Aut2","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"10 Jan","term":"Spr1","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"17 Jan","term":"Spr1","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"31 Jan","term":"Spr1","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"7 Feb","term":"Spr1","act":"Open M","sess":"A","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"7 Feb","term":"Spr1","act":"GAMES","sess":"B","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"28 Feb","term":"Spr2","act":"Rugby","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"14 Mar","term":"Spr2","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"21 Mar","term":"Spr2","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0}],"total":15.0},{"code":"LJC","surname":"Clarke","sessions":[{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 Crafts (DT02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"20 Sep","term":"Aut1","act":"Yr10 11 12 Crafts (DT02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"4 Oct","term":"Aut1","act":"SCR","sess":"A","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"4 Oct","term":"Aut1","act":"Yr10 11 12 Crafts (DT02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"11 Oct","term":"Aut1","act":"Y12 First Aid (Sports Hall)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"SCR","sess":"A","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"8 Nov","term":"Aut2","act":"Yr 10 13 Crafts (DT02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"15 Nov","term":"Aut2","act":"SCR","sess":"A","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"15 Nov","term":"Aut2","act":"Yr 10 13 Crafts (DT02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"29 Nov","term":"Aut2","act":"SCR","sess":"A","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"29 Nov","term":"Aut2","act":"Yr 10 13 Crafts (DT02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"6 Dec","term":"Aut2","act":"SCR","sess":"A","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"6 Dec","term":"Aut2","act":"Yr 10 13 Crafts (DT02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"10 Jan","term":"Spr1","act":"SCR","sess":"A","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"10 Jan","term":"Spr1","act":"Y11 Crafts (DT02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"17 Jan","term":"Spr1","act":"SCR","sess":"A","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"17 Jan","term":"Spr1","act":"Y11 Crafts (DT02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"31 Jan","term":"Spr1","act":"SCR","sess":"A","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"31 Jan","term":"Spr1","act":"Y11 Crafts (DT02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"7 Feb","term":"Spr1","act":"Y11 Bake-Off D (Devine Kitchen)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"7 Feb","term":"Spr1","act":"Y11 Crafts (DT02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"28 Feb","term":"Spr2","act":"Y9 Battlefields","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"SCR","sess":"A","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"14 Mar","term":"Spr2","act":"LEX Admin","sess":"B","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"21 Mar","term":"Spr2","act":"SCR","sess":"A","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"21 Mar","term":"Spr2","act":"LEX Admin","sess":"B","cat":"support","wt":1.0,"mult":0.5,"score":0.5}],"total":18.0},{"code":"HCC","surname":"Claxton","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y10 Service","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"11 Oct","term":"Aut1","act":"Y12 First Aid (Sports Hall)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"Y12 Service - Ranston","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"29 Nov","term":"Aut2","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"6 Dec","term":"Aut2","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"10 Jan","term":"Spr1","act":"Y12 Service - Larmer","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"31 Jan","term":"Spr1","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"7 Feb","term":"Spr1","act":"Y11 Polo","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"28 Feb","term":"Spr2","act":"Yr10&12 Clay shooting","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Yr10&12 Clay shooting","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Expedition Training","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":18.0},{"code":"DOC","surname":"Conway","sessions":[{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 Referee Course (LA03, King's pitch)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 Referee Course (LA06, King's pitch)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"20 Sep","term":"Aut1","act":"Yr10 11 12 Referee Course (LA06, King's pitch)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Yr10 11 12 Referee Course (LA06, King's pitch)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Yr10 11 12 Referee Course (LA06, King's pitch)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"15 Nov","term":"Aut2","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"29 Nov","term":"Aut2","act":"Y11 THINK PhysEd (C) (LA06)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"6 Dec","term":"Aut2","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"10 Jan","term":"Spr1","act":"Y11 Hockey Umpiring (LA06)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"10 Jan","term":"Spr1","act":"GAMES","sess":"B","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"17 Jan","term":"Spr1","act":"Y11 Hockey Umpiring (LA06)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"17 Jan","term":"Spr1","act":"GAMES","sess":"B","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"31 Jan","term":"Spr1","act":"Y11 Hockey Umpiring (LA06)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"31 Jan","term":"Spr1","act":"GAMES","sess":"B","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"28 Feb","term":"Spr2","act":"Rugby","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"14 Mar","term":"Spr2","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"21 Mar","term":"Spr2","act":"GAMES","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0}],"total":16.75},{"code":"MHC","surname":"Crawshaw","sessions":[{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 Bake-Off W (Wolverton)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Yr10 11 12 Bake-Off W (Wolverton)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Y13 THINK (C) AChem (CH02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"8 Nov","term":"Aut2","act":"Yr 10 13 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"Yr 10 13 Bake-Off W (Wolverton)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Yr 10 13 Bake-Off W (Wolverton)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y11 Bake-Off (Wolverton)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y11 Bake-Off (Wolverton)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y11 Bake-Off (Wolverton)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Y13 THINK (C) AChem (CH02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"28 Feb","term":"Spr2","act":"Y9 Battlefields","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y12 Charity (HI01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":17.0},{"code":"JC","surname":"Curwain","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y9 Kayak / SUP","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Y9 Kayak / SUP","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Y9 Kayak / SUP","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Y9 Kayak / SUP","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":6.0},{"code":"CBAD","surname":"Didier","sessions":[{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 Bake-Off D (Devine)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"4 Oct","term":"Aut1","act":"Y13 THINK (C) French (LA03)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"11 Oct","term":"Aut1","act":"Y11 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"11 Oct","term":"Aut1","act":"Y11 Elevate (UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"8 Nov","term":"Aut2","act":"Y9 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"8 Nov","term":"Aut2","act":"Y9 Tanzania (PY02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"15 Nov","term":"Aut2","act":"Y12 Wellbeing","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Y11 THINK Frnch (A) (LA04)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"10 Jan","term":"Spr1","act":"Y10 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"10 Jan","term":"Spr1","act":"Y10 Elevate (UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"31 Jan","term":"Spr1","act":"Y11 Bake-Off D (Devine Kitchen)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Y13 THINK (C) French (LA03)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"14 Mar","term":"Spr2","act":"Yr10&12 Bake-Off D","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y12 Charity (HI02)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":16.0},{"code":"ELD","surname":"Dorey","sessions":[{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 Polo","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"4 Oct","term":"Aut1","act":"Yr10 11 12 Polo","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Y11 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"11 Oct","term":"Aut1","act":"Y11 Elevate (UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"8 Nov","term":"Aut2","act":"Y9 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"8 Nov","term":"Aut2","act":"Y9 Tanzania ()","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"15 Nov","term":"Aut2","act":"Y12 Wellbeing","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Yr 10 13 Polo","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Yr 10 13 Polo","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y10 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"10 Jan","term":"Spr1","act":"Y10 Elevate (UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"17 Jan","term":"Spr1","act":"Y11 Polo","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y11 Polo","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"28 Feb","term":"Spr2","act":"Yr10&12 Polo","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Yr10&12 Polo","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Yr10&12 Polo","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":21.5},{"code":"RHD","surname":"Dorey","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y13 THINK (A) BusA (BS03)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"20 Sep","term":"Aut1","act":"Y13 Academic Enrichment (CA01, BS01, BS04)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Y13 Academic Enrichment (CA01, BS01, BS04)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Y13 Academic Enrichment (CA01, BS01, BS04)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Y12 Careers (CA01)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"29 Nov","term":"Aut2","act":"Y11 SS (BS02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"6 Dec","term":"Aut2","act":"Y12 Careers (BS01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y13 THINK (A) BusA (BS03)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"17 Jan","term":"Spr1","act":"Y12 Careers (BS01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y12 Careers (BS01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Y13 GAP Years (BS03)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y12 Charity (GE01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":15.5},{"code":"LJD","surname":"Douglas","sessions":[{"date":"20 Sep","term":"Aut1","act":"Y9 Exp Soc","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Y10 Service","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Y10 Service - Orchard","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"Y9 MUN (UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Y11 THINK GeogG (C) (GE02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"6 Dec","term":"Aut2","act":"Y9 Service - Litter","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y12 Service - Larmer","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y10 Service - Larmer","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y10 Service - Larmer","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y11 Tanzania (PY01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":14.5},{"code":"FD","surname":"Francesca Druce ","sessions":[{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 Pilates (Library)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"20 Sep","term":"Aut1","act":"Yr10 11 12 Pilates (Library)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"4 Oct","term":"Aut1","act":"Yr10 11 12 Pilates (Library)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"8 Nov","term":"Aut2","act":"Yr 10 13 Pilates","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"15 Nov","term":"Aut2","act":"Yr 10 13 Pilates","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"29 Nov","term":"Aut2","act":"Yr 10 13 Pilates (dance studio)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"6 Dec","term":"Aut2","act":"Yr 10 13 Pilates","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"10 Jan","term":"Spr1","act":"Y11 Pilates (Library)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"10 Jan","term":"Spr1","act":"Y9 Pilates (Library)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"17 Jan","term":"Spr1","act":"Y11 Pilates (Library)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"17 Jan","term":"Spr1","act":"Y9 Pilates (Library)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"31 Jan","term":"Spr1","act":"Y11 Pilates (Library)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"31 Jan","term":"Spr1","act":"Y9 Pilates (Library)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"7 Feb","term":"Spr1","act":"Y11 Pilates (Squash)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"7 Feb","term":"Spr1","act":"Y9 Pilates (Squash)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"14 Mar","term":"Spr2","act":"Yr10&12 Pilates (Forum)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75}],"total":12.0},{"code":"MEG","surname":"Gordon","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y10 Service","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Y13 THINK (B) SPA (LA02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"4 Oct","term":"Aut1","act":"Yr10 11 12 Bake-Off W (Wolverton)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"Y11 THINK Spn (B) (LA01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"6 Dec","term":"Aut2","act":"Y12 Careers (BS02)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y13 THINK (B) SPA (LA02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"31 Jan","term":"Spr1","act":"Y10 Service - Orchard","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Yrs 10 & 12 Tanzania (UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"28 Feb","term":"Spr2","act":"Y11 Service - Larmer","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"21 Mar","term":"Spr2","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0}],"total":14.0},{"code":"TDPG","surname":"Griffiths","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y9 Bouldering","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Y9 Exp Soc","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"Yr 10 13 GolfS","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"Y9 MUN (UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Yr 10 13 Bouldering","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Y9 Service - Breach","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y11 Clay shooting","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y10 Service - Ranston","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Yrs 10 & 12 Tanzania (UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"28 Feb","term":"Spr2","act":"Rugby","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"14 Mar","term":"Spr2","act":"Y11 Service - Breach","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y9 MUN (BS01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":17.5},{"code":"HH","surname":"Holman","sessions":[{"date":"10 Jan","term":"Spr1","act":"Y9 Drama (Theatre)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y9 Drama (Theatre)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Y13 Presentation Skills (BS04)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":4.5},{"code":"NAJ","surname":"Jones","sessions":[{"date":"13 Sep","term":"Aut1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"20 Sep","term":"Aut1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"4 Oct","term":"Aut1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"11 Oct","term":"Aut1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"8 Nov","term":"Aut2","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"15 Nov","term":"Aut2","act":"Duty SLT","sess":"A","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"15 Nov","term":"Aut2","act":"Yr 10 13 Cookery (TCS)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"29 Nov","term":"Aut2","act":"Y12 Careers (PY01)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"29 Nov","term":"Aut2","act":"Y12 Elevate (UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"6 Dec","term":"Aut2","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"10 Jan","term":"Spr1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"17 Jan","term":"Spr1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"31 Jan","term":"Spr1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"7 Feb","term":"Spr1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"28 Feb","term":"Spr2","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"14 Mar","term":"Spr2","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"21 Mar","term":"Spr2","act":"Y13 Budgeting (MA01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":16.25},{"code":"AK","surname":"Kalim","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y9 Multisports","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Y9 Multisports","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Y9 Multisports","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Y9 Multisports","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"28 Feb","term":"Spr2","act":"Rugby","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0}],"total":7.0},{"code":"RRK","surname":"Kerr","sessions":[{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 Clayescom Radio","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Yr10 11 12 Clayescom Radio","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Yr10 11 12 Clayescom Radio","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"Yr 10 13 Clayescom Radio (MUSE)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"Y11 THINK (B) MusicG (MUSC)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"29 Nov","term":"Aut2","act":"Yr 10 13 Clayescom Radio (MUSE)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y11 Clayescom (MUSE)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y11 Clayescom (MUSE)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y11 Clayescom (MUSE)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Y11 Clayescom (MUSE)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"28 Feb","term":"Spr2","act":"Salisbury Cathedral","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y12 Charity (GE02)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":17.5},{"code":"GHK","surname":"King","sessions":[{"date":"13 Sep","term":"Aut1","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"20 Sep","term":"Aut1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"4 Oct","term":"Aut1","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"11 Oct","term":"Aut1","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"8 Nov","term":"Aut2","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"15 Nov","term":"Aut2","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"29 Nov","term":"Aut2","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"6 Dec","term":"Aut2","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"10 Jan","term":"Spr1","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"17 Jan","term":"Spr1","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"31 Jan","term":"Spr1","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"7 Feb","term":"Spr1","act":"Y13 SS (CA01)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"7 Feb","term":"Spr1","act":"LEX Admin","sess":"B","cat":"support","wt":1.0,"mult":0.5,"score":0.5},{"date":"28 Feb","term":"Spr2","act":"Y11 Service - Trees","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"21 Mar","term":"Spr2","act":"Expedition Training","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":16.25},{"code":"HL","surname":"Laidler","sessions":[{"date":"10 Jan","term":"Spr1","act":"Y12 Service - Larmer","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y10 Service - Trees","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y13 SS (GE03)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Y9 Forensics (BI01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y9 MUN (BS02)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":7.5},{"code":"RJL","surname":"Linley","sessions":[{"date":"20 Sep","term":"Aut1","act":"Y13 THINK (B) PhysA (PH01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"17 Jan","term":"Spr1","act":"Y13 THINK (B) PhysA (PH01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0}],"total":2.0},{"code":"AM","surname":"Maistrello","sessions":[{"date":"8 Nov","term":"Aut2","act":"Y11 SS (GE02)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"Yr 10 13 Cookery (TCS)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"6 Dec","term":"Aut2","act":"Yr 10 13 Crafts (DT02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"17 Jan","term":"Spr1","act":"Y12 Careers (BS02)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y12 Careers (BS02)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Yrs 10 & 12 Tanzania (UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"28 Feb","term":"Spr2","act":"Y11 Service - Orchard","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"EAL","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y11 Tanzania","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":12.0},{"code":"RMM","surname":"McCall","sessions":[{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 Bake-Off K (King's)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Yr10 11 12 Bake-Off K (King's)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Yr10 11 12 Bake-Off K (King's)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Y13 THINK (D) AEng (EN01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"8 Nov","term":"Aut2","act":"Yr 10 13 Bake-Off W (Wolverton)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Yr 10 13 Bake-Off W (Wolverton)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y13 THINK (D) AEng (EN01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"7 Feb","term":"Spr1","act":"Y11 Bake-Off (King's)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"28 Feb","term":"Spr2","act":"Yr10&12 Bake-Off W (King's)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Yr10&12 Bake-Off W (King's)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y9 MUN (The UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":15.5},{"code":"MMcK","surname":"McKeown","sessions":[{"date":"20 Sep","term":"Aut1","act":"Yr10 11 12 Polo","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Y10 Service - Ranston","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"Yr 10 13 Polo","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"Y9 MUN (UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Y9 Service - Breach","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Y12 Careers (BS03)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y13 THINK (B) Hsc","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"17 Jan","term":"Spr1","act":"Y12 Careers (BS03)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Y9 Drama (JBLT)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Y9 Forensics (BI02)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y11 Tanzania","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":16.0},{"code":"CRM","surname":"Middle","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y13 THINK (A) BSP (LA05)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"20 Sep","term":"Aut1","act":"Y10 Service","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Y13 THINK (C) BSP (LA05)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"11 Oct","term":"Aut1","act":"Y10 Service - Breach","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"Y11 THINK PhysEd (B) (LA06)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"29 Nov","term":"Aut2","act":"Y9 Service - Orchard","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Y9 Service - Breach","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y13 THINK (A) BSP (LA05)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"31 Jan","term":"Spr1","act":"Y10 Service - Orchard","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Y13 THINK (C) BSP (LA05)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"28 Feb","term":"Spr2","act":"Rugby","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"14 Mar","term":"Spr2","act":"Y9 Forensics (BI03)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y10 Service - Orchard","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":16.5},{"code":"MIN","surname":"Newland","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y9 Exp Soc","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Y13 THINK (B) Hstry (HI01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"11 Oct","term":"Aut1","act":"Y9 Exp Soc","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"Y11 THINK Hst (D) (HI01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"15 Nov","term":"Aut2","act":"Y9 MUN (PY01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Y11 THINK Hst (A) (HI01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"17 Jan","term":"Spr1","act":"Y13 THINK (B) Hstry (HI01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"31 Jan","term":"Spr1","act":"Y12 Careers (PY01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"LEX Admin","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"28 Feb","term":"Spr2","act":"Y9 Battlefields","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y9 MUN (BS03)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":14.0},{"code":"OZOG","surname":"Orue-Green","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y 10 11 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Y 10 11 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Y 10 11 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"Yr 10 13 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"Y11 THINK Spn (B) (LA01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"29 Nov","term":"Aut2","act":"Yr 10 13 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Yr 10 13 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y9 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y9 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y9 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Y9 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Y13 Cooking (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y13 Cooking (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":19.0},{"code":"SJP","surname":"Palacios","sessions":[{"date":"10 Jan","term":"Spr1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"17 Jan","term":"Spr1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"31 Jan","term":"Spr1","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"7 Feb","term":"Spr1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"28 Feb","term":"Spr2","act":"Salisbury Cathedral","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"21 Mar","term":"Spr2","act":"Duty SLT","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0}],"total":7.5},{"code":"BP","surname":"Pender","sessions":[{"date":"13 Sep","term":"Aut1","act":"Driving to/from service","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"20 Sep","term":"Aut1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"4 Oct","term":"Aut1","act":"Yr10 11 12 Bake-Off D (Devine)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Y11 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"11 Oct","term":"Aut1","act":"Y11 Elevate (UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"8 Nov","term":"Aut2","act":"Y9 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"8 Nov","term":"Aut2","act":"Y9 Tanzania","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"15 Nov","term":"Aut2","act":"Y12 Wellbeing","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Y11 THINK Drama (A) (Theatre)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"10 Jan","term":"Spr1","act":"Y10 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"10 Jan","term":"Spr1","act":"OFF LEX (BS04)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"17 Jan","term":"Spr1","act":"Y9 Drama (Theatre)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y13 THINK (D) Performing (EN03)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"7 Feb","term":"Spr1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"28 Feb","term":"Spr2","act":"Y11 Drama GCSE","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y11 Tanzania","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":16.75},{"code":"HAP","surname":"Perrett","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y13 Academic Enrichment (CA01, BS01, BS04)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"4 Oct","term":"Aut1","act":"Y13 THINK (C) AEng (EN01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"11 Oct","term":"Aut1","act":"Y11 Elevate (UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"8 Nov","term":"Aut2","act":"Y12 Service - Orchard","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"Y11 SS (BS04)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Y12 Careers (PY02)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"29 Nov","term":"Aut2","act":"Y12 Elevate (UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"6 Dec","term":"Aut2","act":"Y11 SS (BS04)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"OFF LEX (BS04)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"10 Jan","term":"Spr1","act":"Y10 Elevate (UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"17 Jan","term":"Spr1","act":"Y13 SS (BS02)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y12 Careers (BS04)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Y13 THINK (C) AEng (EN01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"28 Feb","term":"Spr2","act":"Y11 Service - Larmer","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Y11 Service - Breach","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y12 Charity  (GE03)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"21 Mar","term":"Spr2","act":"Y12 Charity (GE03)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75}],"total":20.25},{"code":"DRP","surname":"Podger","sessions":[{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 Art Studio (AR01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Yr10 11 12 Art Studio (AR01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Y13 THINK (C) ArtD (AR01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"15 Nov","term":"Aut2","act":"Yr 10 13 Art Studio (AR01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Yr 10 13 Art Studio (AR01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Yr 10 13 Art Studio (AR01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y9 DT and Art (DT01, AR01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y9 DT and Art (DT01, AR01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y9 DT and Art (DT01, AR01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Y13 THINK (C) ArtD (AR01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"28 Feb","term":"Spr2","act":"Yr10&12 Art Studio (AR01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Yr10&12 Art Studio (AR01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":17.0},{"code":"PJR","surname":"Randall","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y13 THINK (A) GEOGA (GE01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"20 Sep","term":"Aut1","act":"Yr10 11 12 GolfC","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Y9 Bouldering","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"Yr 10 13 Clay shooting","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Yr 10 13 GolfS","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Yr 10 13 GolfS","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y13 THINK (A) GEOGA (GE01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"17 Jan","term":"Spr1","act":"Y13 THINK (B) GEOGA (GE01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"31 Jan","term":"Spr1","act":"Y12 Careers (BS04)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Y11 Hockey Umpiring (LA06)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"7 Feb","term":"Spr1","act":"Y13 SS (GE01)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"21 Mar","term":"Spr2","act":"Y9 MUN (BS04)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":15.0},{"code":"JAR","surname":"Reach","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y13 THINK (A) MATHSA (MA01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"4 Oct","term":"Aut1","act":"Y10 Service","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y13 THINK (A) MATHSA (MA01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"31 Jan","term":"Spr1","act":"Y13 THINK (D) FMATHS (MA02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"28 Feb","term":"Spr2","act":"DofE","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":6.0},{"code":"DIR","surname":"Rimmer","sessions":[{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 GolfC","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Yr10 11 12 GolfC","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Yr10 11 12 GolfC","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Y10 Service - Orchard","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"Y12 Service - Breach","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"Y9 MUN (UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Y9 Service - Ranston","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Y9 Service - Ranston","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y10 Service - Trees","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y10 Service - Breach","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Y11 Bake-Off D (Devine Kitchen)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"7 Feb","term":"Spr1","act":"Yrs 10 & 12 Tanzania (UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"28 Feb","term":"Spr2","act":"Y9 Battlefields","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Y11 Service - Trees","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y10 Service - Trees","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":21.0},{"code":"SER","surname":"Rowden","sessions":[{"date":"11 Oct","term":"Aut1","act":"Y13 THINK (D) BIOA (BIO3)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"8 Nov","term":"Aut2","act":"Y12 Service - Orchard","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Y9 Service - Orchard","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Y12 Careers ()","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y12 Service - Volunteering","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y12 Careers (BS04)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y13 THINK (D) BIOA (BIO3)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"28 Feb","term":"Spr2","act":"Yr10&12 Crafts (AR02)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Yr10&12 Crafts (AR02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"21 Mar","term":"Spr2","act":"Y12 Charity (ML)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":13.25},{"code":"JS","surname":"Selleck","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y 10 11 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Y 10 11 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Y 10 11 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Y13 THINK Hospitality (EN02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"29 Nov","term":"Aut2","act":"Yr 10 13 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Yr 10 13 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y9 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y9 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y13 THINK Hospitality (D) (EN02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"7 Feb","term":"Spr1","act":"Y9 Cookery (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Y13 Cooking (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y13 Cooking (TCS)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":17.0},{"code":"PMT","surname":"Tandoh","sessions":[{"date":"20 Sep","term":"Aut1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"11 Oct","term":"Aut1","act":"Y11 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"8 Nov","term":"Aut2","act":"Y9 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"15 Nov","term":"Aut2","act":"Y12 Wellbeing","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y10 Wellbeing","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"10 Jan","term":"Spr1","act":"Y10 Elevate (UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"7 Feb","term":"Spr1","act":"Open M","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0}],"total":6.5},{"code":"AST","surname":"Tettenbourn","sessions":[{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 GolfS","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Yr10 11 12 GolfS","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Y13 THINK (D) ICTA (IT01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"8 Nov","term":"Aut2","act":"Y11 THINK CMP (D) (ML)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"15 Nov","term":"Aut2","act":"Yr 10 13 GolfS","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Y11 THINK ICT (C) (IT01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"17 Jan","term":"Spr1","act":"Y10 Service - Larmer","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y13 THINK (D) ICTA (IT01)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"7 Feb","term":"Spr1","act":"Yrs 10 & 12 Tanzania (UN)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"28 Feb","term":"Spr2","act":"Yr10&12 Bouldering","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Yr10&12 Golf","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":14.5},{"code":"DWA","surname":"Wallace","sessions":[{"date":"4 Oct","term":"Aut1","act":"Y13 THINK (C) MusT (MUST)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"15 Nov","term":"Aut2","act":"Yr 10 13 Clayescom Radio (MUSE)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y9 Drama (Theatre)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y9 Drama (Theatre)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y9 Drama (Theatre)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Y13 THINK (C) MusT (MUST)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0}],"total":8.0},{"code":"SCW","surname":"Wansey","sessions":[{"date":"13 Sep","term":"Aut1","act":"Y9 Exp Soc","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Y13 THINK (B) GEOGA (GE03)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"11 Oct","term":"Aut1","act":"Out of School","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"Y11 THINK GeogG (D) (GE03)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"15 Nov","term":"Aut2","act":"Y11 THINK GeogG (B) (GE03)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"29 Nov","term":"Aut2","act":"Y11 SS (GE03)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"6 Dec","term":"Aut2","act":"Y9 Service - Fontmell","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"28 Feb","term":"Spr2","act":"Y13 SS (HI01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":9.75},{"code":"TIW","surname":"Westlake","sessions":[{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 Referee Course (LA03, King's pitch)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 Referee Course (LA06, King's pitch)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"20 Sep","term":"Aut1","act":"Yr10 11 12 Referee Course (LA06, King's pitch)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Yr10 11 12 Referee Course (LA06, King's pitch)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"11 Oct","term":"Aut1","act":"Yr10 11 12 Referee Course (LA06, King's pitch)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"Yr 10 13 GolfC","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"Yr 10 13 GolfC","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Yr 10 13 GolfC","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"6 Dec","term":"Aut2","act":"Yr 10 13 GolfC","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y11 Golf","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y11 Golf","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y11 Golf","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Y11 Golf","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"28 Feb","term":"Spr2","act":"Yr10&12 Golf","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"14 Mar","term":"Spr2","act":"Yr10&12 Golf","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y10 Service - Larmer","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":22.5},{"code":"RFW","surname":"Winearls","sessions":[{"date":"13 Sep","term":"Aut1","act":"Yr10 11 12 Clay Shooting","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"20 Sep","term":"Aut1","act":"Yr10 11 12 Clay Shooting","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Yr10 11 12 Clay Shooting","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"8 Nov","term":"Aut2","act":"Yr 10 13 Exmoor Game","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"15 Nov","term":"Aut2","act":"Yr 10 13 Clay shooting","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"29 Nov","term":"Aut2","act":"Yr 10 13 Clay shooting","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"17 Jan","term":"Spr1","act":"Y11 Clay shooting","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y11 Clay shooting","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"7 Feb","term":"Spr1","act":"Y11 Clay shooting","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"28 Feb","term":"Spr2","act":"Rugby","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"14 Mar","term":"Spr2","act":"Y13 Car Maintenance (Manor)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y13 Car Maintenance (Manor)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75}],"total":16.75},{"code":"MOP","surname":"du Plessis","sessions":[{"date":"20 Sep","term":"Aut1","act":"Y9 Exp Soc","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"4 Oct","term":"Aut1","act":"Y13 THINK (C) Econ (BS02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"11 Oct","term":"Aut1","act":"Y13 THINK (D) EntEnt (BS03)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"15 Nov","term":"Aut2","act":"Y9 MUN (PY02)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"15 Nov","term":"Aut2","act":"Y9 MUN (UPY02)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"29 Nov","term":"Aut2","act":"Y12 Careers (JBLT)","sess":"A","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"29 Nov","term":"Aut2","act":"Y12 Elevate (UN)","sess":"B","cat":"lead","wt":1.5,"mult":0.5,"score":0.75},{"date":"6 Dec","term":"Aut2","act":"Y12 Careers (BS04)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"10 Jan","term":"Spr1","act":"Y13 SS (BS02)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"31 Jan","term":"Spr1","act":"Y13 THINK (D) EntEnt (BS03)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"7 Feb","term":"Spr1","act":"Y13 THINK (C) Econ (BS02)","sess":"A+B","cat":"support","wt":1.0,"mult":1.0,"score":1.0},{"date":"14 Mar","term":"Spr2","act":"Y9 Forensics (BI03)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5},{"date":"21 Mar","term":"Spr2","act":"Y13 Finance (CA01)","sess":"A+B","cat":"lead","wt":1.5,"mult":1.0,"score":1.5}],"total":14.5}];
 function renderAdminWeighting(el){
   el.appendChild(h("div",{style:{fontWeight:700,fontSize:"14px",marginBottom:"4px"}},"⚖ Staff Weighting — Explainer & History"));
   el.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text3)",marginBottom:"16px",lineHeight:"1.7"}},"How the Summer and YTD allocation totals are calculated, and how to import prior-term data."));
