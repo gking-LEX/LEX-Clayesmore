@@ -1,0 +1,12 @@
+# Local working data — never committed.
+#
+# Backup JSON exports, form-response CSVs and iSAMS exports contain pupil and
+# parent names, email addresses and contact details. This repository is PUBLIC
+# (GitHub Pages on the free plan requires it), so nothing here may be committed.
+local-data/
+
+# Scratch copies made while patching
+*.vprev.html
+*.bak
+scratch/
+node_modules/
