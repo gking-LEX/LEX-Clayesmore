@@ -959,7 +959,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v166';
+const CURRENT_VERSION = 'v167';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -1313,6 +1313,21 @@ function parseDateDmy(full){
   const m=full.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   if(!m)return [9999,99,99];
   return [parseInt(m[3],10),parseInt(m[2],10),parseInt(m[1],10)];
+}
+// v167: a Google Form timestamp ("DD/MM/YYYY HH:MM:SS", UK order) as milliseconds, or null if
+// it isn't one. The engine used new Date(), which reads it US-style: on the 27 Sept backup 95
+// of 164 responses (day above 12) became Invalid Date, scored 0 and sorted FIRST, and the
+// other 69 had day and month swapped — so first-come-first-served was close to random in
+// every oversubscribed activity. Callers must sort null LAST. ISO dates are accepted too,
+// for hand-made sheets.
+function _formTimestampMs(s){
+  const t=String(s==null?"":s).trim();
+  let m=t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T,]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/),y,mo,d;
+  if(m){d=+m[1];mo=+m[2];y=+m[3];}
+  else{m=t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);if(!m)return null;y=+m[1];mo=+m[2];d=+m[3];}
+  const H=+(m[4]||0),M=+(m[5]||0),S=+(m[6]||0);
+  if(mo<1||mo>12||d<1||d>31||H>23||M>59||S>59)return null;
+  return Date.UTC(y,mo-1,d,H,M,S);
 }
 // v71: returns indices into dates[] ordered chronologically, preserving
 // insertion order as a stable tiebreaker. The returned indices are the
@@ -3631,7 +3646,8 @@ function buildAllocCache(emails,diList){
 function cleanupPupilAllocations(ne){
   if(!ne)return;
   if(allocRes)allocRes=allocRes.filter(r=>normEmail(r.email)!==ne);
-  HALF_TERMS.map(h=>h.toLowerCase()).forEach(ht=>{if(allocOverrides[ht])delete allocOverrides[ht][ne];});
+  HALF_TERMS.map(h=>h.toLowerCase()).forEach(ht=>{if(allocOverrides[ht])delete allocOverrides[ht][ne];
+    if(allocOverrides._reason&&allocOverrides._reason[ht])delete allocOverrides._reason[ht][ne];});   // v167
   const removedDateKeys=[];
   Object.keys(allocDateOverrides).forEach(k=>{
     const parts=k.split("|");
@@ -5913,6 +5929,7 @@ function renderAllocPaste(el){
               if(allocOverrides[ht]){
                 const k=Object.keys(allocOverrides[ht]).find(key=>normEmail(key)===ne);
                 if(k)delete allocOverrides[ht][k];
+                if(allocOverrides._reason&&allocOverrides._reason[ht])delete allocOverrides._reason[ht][ne];   // v167
               }
             });
             // Remove from allocDateOverrides — local AND cloud
@@ -6361,7 +6378,7 @@ function renderAllocPaste(el){
 function renderAllocHistory(el){
   el.appendChild(h("div",{className:"card card-pad mb-16"},
     h("label",{className:"field-label"},"Paste Previous Allocation History"),
-    h("p",{style:{fontSize:"11px",color:"var(--text3)",marginBottom:"8px"}},"Format: Email, Activity, Half-Term (e.g. Autumn 1), Choice Index (0=1st, 1=2nd, 2=3rd). This feeds the fairness algorithm — pupils who previously received 2nd/3rd choices get priority for 1st choice."),
+    h("p",{style:{fontSize:"11px",color:"var(--text3)",marginBottom:"8px"}},"Format: Email, Activity, Half-Term (e.g. Autumn 1), Choice Index (0=1st, 1=2nd, 2=3rd). Kept for the record: since v167 the allocation engine uses this academic year's allocations only, not this history."),
     (()=>{
       const ta=h("textarea",{rows:5,placeholder:"jsmith@clayesmore.com\tBake-Off\tAutumn 1\t0\nabrown@clayesmore.com\tCricket\tAutumn 1\t1",style:{marginBottom:"8px"}});
       const wrap=h("div",null,ta,h("div",{className:"flex"},
@@ -6396,76 +6413,23 @@ function renderAllocHistory(el){
   }
 }
 
-function renderAllocOverrides(el){
-  el.appendChild(h("div",{className:"alert alert-info mb-12"},"Overrides are applied instantly — allocation results update automatically in the background when form data is loaded."));
-  _formHalves().forEach(ht=>{
-    const htLabel=halfLabel(ht);
-    const card=h("div",{className:"card card-pad mb-16"});
-    card.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",color:ht==="S1"?"var(--accent)":"var(--green)",marginBottom:"10px"}},htLabel+" Overrides"));
-    const overrides=allocOverrides[ht.toLowerCase()]||{};
-    // Show existing overrides
-    Object.entries(overrides).forEach(([email,activity])=>{
-      const pupil=findPupilByEmail(email);
-      const name=pupil?(pupil.pref||pupil.forename||"")+" "+(pupil.surname||""):email;
-      card.appendChild(h("div",{className:"flex",style:{padding:"4px 0",borderBottom:"1px solid var(--border)",gap:"8px"}},
-        h("span",{style:{fontSize:"12px",fontWeight:500,minWidth:"200px"}},name),
-        h("span",{style:{fontSize:"12px",color:"var(--text3)"}},email),
-        h("span",{style:{fontSize:"12px",color:"var(--purple)",fontWeight:600}},"→ "+activity),
-        h("button",{className:"btn btn-danger btn-xs",onClick:()=>{
-          delete allocOverrides[ht.toLowerCase()][email];saveAll();
-          const main=document.querySelector(".main");if(main){main.innerHTML="";renderAlloc(main);}
-        }},"Remove")
-      ));
-    });
-    // Add override form
-    const addRow=h("div",{className:"flex",style:{marginTop:"10px",gap:"6px"}});
-    const emailSel=h("select",{style:{width:"220px",fontSize:"11px"}});
-    emailSel.appendChild(h("option",{value:""},"Select pupil…"));
-    // Show from formData or pupils
-    const allEmails=[...new Set([...formData.map(r=>r.email),...pupils.map(p=>p.email)].filter(Boolean))].sort();
-    allEmails.forEach(em=>{
-      const p=findPupilByEmail(em);
-      const label=p?((p.pref||p.forename||"")+" "+(p.surname||"")+" — "+em):em;
-      emailSel.appendChild(h("option",{value:em},label));
-    });
-    const actSel=h("select",{style:{width:"180px",fontSize:"11px"}});
-    actSel.appendChild(h("option",{value:""},"Select activity…"));
-    const halfDi=dates.map((_,i)=>i).filter(i=>dates[i].half===ht);
-    const halfActs=acts.filter(a=>a.di.some(d=>halfDi.includes(d))).map(a=>a.n).sort();
-    halfActs.forEach(n=>actSel.appendChild(h("option",{value:n},n)));
-    // Special override options
-    ["Out of school","Supported Study","Other (see notes)"].forEach(n=>actSel.appendChild(h("option",{value:n,style:"color:var(--text3)"},n)));
-    addRow.appendChild(emailSel);addRow.appendChild(actSel);
-    addRow.appendChild(h("button",{className:"btn btn-primary btn-sm",onClick:()=>{
-      const em=emailSel.value,act=actSel.value;
-      if(!em||!act){toast("Select both pupil and activity","err");return;}
-      if(!allocOverrides[ht.toLowerCase()])allocOverrides[ht.toLowerCase()]={};
-      allocOverrides[ht.toLowerCase()][em]=act;saveAll();toast("Override added");
-      const main=document.querySelector(".main");if(main){main.innerHTML="";renderAlloc(main);}
-    }},"Add Override"));
-    card.appendChild(addRow);
-    el.appendChild(card);
-  });
-}
-
 function renderAllocRun(el){
   // Explanation of algorithm
   const explCard=h("div",{className:"card card-pad mb-16"});
   explCard.appendChild(h("div",{style:{fontWeight:600,fontSize:"13px",marginBottom:"8px"}},"Allocation Priority Rules"));
   const rules=h("div",{style:{background:"var(--surface2)",borderRadius:"6px",padding:"12px",fontSize:"12px",color:"var(--text2)",lineHeight:"1.8"}});
   rules.appendChild(h("div",null,h("strong",{style:{color:"var(--accent)"}},"1. Manual overrides"),": Applied first — always take precedence."));
-  rules.appendChild(h("div",null,h("strong",{style:{color:"var(--accent)"}},"2. Fairness priority"),": Pupils who received 2nd or 3rd choices in previous rounds are prioritised for their 1st choice."));
-  rules.appendChild(h("div",null,h("strong",{style:{color:"var(--accent)"}},"3. Repeat penalty"),": If a pupil's 1st choice is an activity they've already done and it's oversubscribed, they're moved down to give others a turn."));
-  rules.appendChild(h("div",null,h("strong",{style:{color:"var(--accent)"}},"4. Timestamp"),": Among equally-ranked pupils, earlier form submissions get priority (first come, first served)."));
+  rules.appendChild(h("div",null,h("strong",{style:{color:"var(--accent)"}},"2. Fairness priority"),": Pupils who missed their 1st choice in an earlier half-term this year go first — judged by what they actually had on each date, per-date moves included. A half-term override counts by the reason recorded for it."));
+  rules.appendChild(h("div",null,h("strong",{style:{color:"var(--accent)"}},"3. Repeats"),": A pupil who already had an activity (or one in its family) earlier this year comes after every first-time pupil who put it 1st. If places are left after them, the repeater still gets it."));
+  rules.appendChild(h("div",null,h("strong",{style:{color:"var(--accent)"}},"4. Timestamp"),": Among equally-ranked pupils, earlier form submissions get priority (first come, first served). A choice made more than once counts once."));
   explCard.appendChild(rules);
   el.appendChild(explCard);
 
   // History status
-  if(allocHistory.length===0){
-    el.appendChild(h("div",{className:"alert alert-warn mb-12"},"No allocation history loaded. The fairness algorithm works best with history from previous terms — load it in the Alloc History sub-tab if available. Without history, allocation uses timestamp order only."));
-  }else{
-    el.appendChild(h("div",{className:"alert alert-success mb-12"},allocHistory.length+" historical allocation records loaded — fairness weighting active."));
-  }
+  // v167: the engine no longer reads allocHistory — fairness is this year only (allocPriorHalves).
+  // The stored records are left alone; the import on the live system matched no current pupil.
+  el.appendChild(h("div",{className:"alert alert-info mb-12"},"Fairness uses this academic year only, from each pupil's actual allocations. Alloc History ("+
+    allocHistory.length+" record"+(allocHistory.length===1?"":"s")+") is kept but not used by the engine."));
 
   // Date-activity mismatch note
   el.appendChild(h("div",{className:"alert alert-info mb-12",style:{fontSize:"11px"}},
@@ -6494,7 +6458,7 @@ function renderAllocRun(el){
         allocHistory.push({email:r.email,activity:r.alloc,half:r.half,halfTerm:halfLabel(r.half),choiceIndex:(r.lvl||1)-1});
         count++;
       });
-      saveAll();toast(count+" records saved to allocation history for future fairness weighting");
+      saveAll();toast(count+" records saved to allocation history (kept for the record — not used by the engine since v167)");
       const main=document.querySelector(".main");if(main){main.innerHTML="";renderAlloc(main);}
     }},"💾 Save Results as History"));
   }
@@ -6511,7 +6475,7 @@ function renderAllocRun(el){
     allocLog.forEach(l=>{
       let col="var(--text3)";
       if(l.includes("UNMATCHED")||l.includes("NOT FOUND"))col="var(--red)";
-      else if(l.includes("FULL")||l.includes("WARNING")||l.includes("REPEAT PENALTY"))col="var(--amber)";
+      else if(l.includes("FULL")||l.includes("WARNING")||(l.includes("REPEAT")&&!l.includes("→")))col="var(--amber)";
       else if(l.includes("→"))col="var(--green)";
       else if(l.startsWith("═")||l.startsWith("SUMMARY")||l.startsWith("CAPACITY"))col="var(--accent)";
       else if(l.includes("OVERRIDE"))col="var(--purple)";
@@ -6912,7 +6876,9 @@ function renderAllocResults(el){
       const sel=h("select",{style:{width:"120px",fontSize:"10px",fontWeight:600,
         color:isUnassigned?"var(--red)":cur==="—"?"var(--text3)":gc(cur),
         background:(allocOverrides[ht]||{})[normEmail(r.email)]?"var(--purple-soft)":"var(--surface)"},
-        onChange:e=>{const val=e.target.value;const ne=normEmail(r.email);if(!allocOverrides[ht])allocOverrides[ht]={};
+        onChange:e=>{const val=e.target.value;const ne=normEmail(r.email);
+          if(val==="CLEAR__"){clearHalfOverride(half,ne);return;}   // v167
+          if(!allocOverrides[ht])allocOverrides[ht]={};
           const prev=allocOverrides[ht][ne]||"";
           // Check for existing per-date overrides in this half that would MASK the half-term override
           if(val&&val!==""){
@@ -6929,7 +6895,9 @@ function renderAllocResults(el){
           else{const act=findActByName_exact(val);if(act&&act.cap>0){const used=capUsed[ht][val]||0;if(used>=act.cap){if(!confirm(val+" is at capacity ("+used+"/"+act.cap+"). Continue?")){e.target.value="";return;}}}
             allocOverrides[ht][ne]=val;}
           logAction("OVERRIDE",ne+" ("+ht.toUpperCase()+"): "+(prev||"—")+" → "+(val||"cleared"));
-          saveAll();autoRealloc("Override saved — allocation updated ✓");}});
+          setAllocOverrideReason(half,ne,"");   // v167: a new value needs its own reason
+          saveAll();autoRealloc("Override saved — allocation updated ✓");
+          if(overrideWantsReason(half,ne))askOverrideReason(half,ne);}});
       // First option: current state
       sel.appendChild(h("option",{value:""},isUnassigned?"— Unassigned —":cur||"—"));
       // v133: LAZY OPTION BUILD (display-only). Everything below the current-state
@@ -6946,6 +6914,11 @@ function renderAllocResults(el){
       let _optsBuilt=false;
       function _buildOpts(){
         if(_optsBuilt)return;_optsBuilt=true;
+        // v167: the only way to REMOVE an override (see clearHalfOverride)
+        if(_halfOverrideKey(half,normEmail(r.email))!=null){
+          const clr=h("option",{value:"CLEAR__"},"← Clear override (restore engine allocation)");
+          clr.style.color="var(--accent)";sel.appendChild(clr);
+        }
         // Unassigned option at top
         const unassignO=h("option",{value:"__UNASSIGNED__"},"— Unassigned —");
         unassignO.style.color="var(--red)";unassignO.style.fontWeight="600";
@@ -6999,6 +6972,17 @@ function renderAllocResults(el){
       const wrap=h("td",{style:{whiteSpace:"nowrap"}});
       const sel=mkOvr(half,cur,actList);
       wrap.appendChild(sel);
+      // v167: why the half-term override was made — click to set or change it
+      if(overrideWantsReason(half,r.email)){
+        const why=allocOverrideReason(half,r.email);
+        wrap.appendChild(h("span",{
+          title:why?"Override reason: "+OVR_REASONS[why].label+" — counts as "+OVR_REASONS[why].counts+". Click to change."
+                   :"No reason recorded — counts as neutral. Click to set one.",
+          onClick:()=>askOverrideReason(half,r.email),
+          style:{display:"inline-block",marginLeft:"4px",fontSize:"9px",fontWeight:700,padding:"1px 4px",borderRadius:"3px",cursor:"pointer",
+            background:why?"var(--purple-soft)":"transparent",color:why?"var(--purple)":"var(--text3)",border:why?"none":"1px dashed var(--border2)"}
+        },why?OVR_REASONS[why].short:"why?"));
+      }
       if(kind==="pd"||kind==="mixed"||kind==="partial"){
         const badge=h("span",{
           title:detail||"",
@@ -7516,12 +7500,17 @@ function renderWaitingLists(el){
   missedOut.forEach(r=>{
     const ovrSel=h("select",{style:{width:"110px",fontSize:"10px",fontWeight:600,color:r.allocated==="UNMATCHED"?"var(--red)":gc(r.allocated)},
       onChange:e=>{const val=e.target.value;const ht=r.half.toLowerCase();const ne=normEmail(r.email);
+        if(val==="CLEAR__"){clearHalfOverride(r.half,ne);const m2=document.querySelector(".main");if(m2){m2.innerHTML="";renderAlloc(m2);}return;}   // v167
         const prev=(allocOverrides[ht]||{})[ne]||"";
         if(!allocOverrides[ht])allocOverrides[ht]={};if(!val)delete allocOverrides[ht][ne];else allocOverrides[ht][ne]=val;
         logAction("OVERRIDE",ne+" ("+ht.toUpperCase()+"): "+(prev||"—")+" → "+(val||"cleared"));
+        setAllocOverrideReason(r.half,ne,"");   // v167: a new value needs its own reason
         saveAll();autoRealloc("Override saved — allocation updated ✓");
-        const main=document.querySelector(".main");if(main){main.innerHTML="";renderAlloc(main);}}});
+        const main=document.querySelector(".main");if(main){main.innerHTML="";renderAlloc(main);}
+        if(overrideWantsReason(r.half,ne))askOverrideReason(r.half,ne);}});
     ovrSel.appendChild(h("option",{value:""},r.allocated));
+    // v167: the only way to REMOVE an override (see clearHalfOverride)
+    if(_halfOverrideKey(r.half,normEmail(r.email))!=null)ovrSel.appendChild(h("option",{value:"CLEAR__"},"← Clear override (restore engine allocation)"));
     actFor(r.half).forEach(n=>{if(n!==r.allocated){const act=findActByName_exact(n);const used=(capUsed2[r.half.toLowerCase()]||{})[n]||0;const cap=act?act.cap:0;const full=cap>0&&used>=cap;const o=h("option",{value:n},n+(full?" (FULL)":""));if(full)o.style.color="#dc2626";ovrSel.appendChild(o);}});
     const emailTd=h("td",{style:{fontFamily:"var(--mono)",fontSize:"9px",color:"var(--accent)",cursor:"pointer",textDecoration:"underline dotted"},
       title:"Click to copy email",onClick:()=>navigator.clipboard.writeText(r.email).then(()=>toast("Email copied"))},r.email);
@@ -8121,6 +8110,139 @@ function _centralCoverFor(email,half){
   return seen.length<=3?seen.join(" / "):("prescribed ("+seen.length+" activities)");
 }
 
+// v167: why a half-term override was made. The engine can't tell a pupil who changed their
+// mind from one moved after missing out, and it decides their priority in later halves.
+// Stored inside allocOverrides under "_reason" — not a half code, so nothing that walks the
+// halves sees it — so it is saved, synced, backed up, snapshotted and restored WITH the
+// override, and there is no new blob key for the save-guard to trip on. Each reason records
+// the activity it was given for: change or clear the override by any route and the reason
+// stops matching, so it falls back to neutral instead of going stale. No reason (every
+// override made before v167) is neutral, so existing overrides keep their meaning.
+const OVR_REASONS={
+  changed:{label:"Changed first choice",short:"changed 1st",counts:"got their first choice (no boost)"},
+  missed:{label:"Swapped after missing out",short:"missed out",counts:"missed out (boost in later halves)"},
+  school:{label:"School decision",short:"school",counts:"neutral"}
+};
+// The key a half-term override is stored under, whatever its case (older entries were stored
+// as typed), or null if there is none.
+function _halfOverrideKey(half,ne){
+  const m=allocOverrides[String(half||"").toLowerCase()];if(!m)return null;
+  if(Object.prototype.hasOwnProperty.call(m,ne))return ne;
+  const k=Object.keys(m).find(x=>normEmail(x)===ne);return k===undefined?null:k;
+}
+function allocOverrideReason(half,email){
+  const ne=normEmail(email),ht=String(half||"").toLowerCase();
+  const k=_halfOverrideKey(half,ne);if(k==null)return "";
+  const r=((allocOverrides._reason||{})[ht]||{})[ne];
+  return (r&&OVR_REASONS[r.why]&&r.to===allocOverrides[ht][k])?r.why:"";
+}
+function setAllocOverrideReason(half,email,why){
+  const ne=normEmail(email),ht=String(half||"").toLowerCase();
+  const k=_halfOverrideKey(half,ne);
+  const rs=allocOverrides._reason&&allocOverrides._reason[ht];
+  if(!why||!OVR_REASONS[why]||k==null){if(rs)delete rs[ne];return;}
+  if(!allocOverrides._reason)allocOverrides._reason={};
+  (allocOverrides._reason[ht]||(allocOverrides._reason[ht]={}))[ne]={to:allocOverrides[ht][k],why};
+}
+// v167: take a pupil's half-term override off, so the engine decides for them again. Until now
+// the only blank option in the override dropdowns was the one showing the current state, which
+// fires no change: an override could be replaced but never removed. "— Unassigned —" is not the
+// same thing — it takes the pupil out of the engine altogether. Removes every key that matches
+// whatever its case, since older entries were stored as typed.
+function clearHalfOverride(half,email){
+  const ne=normEmail(email),ht=String(half||"").toLowerCase(),m=allocOverrides[ht];
+  if(!m)return false;
+  const keys=Object.keys(m).filter(k=>normEmail(k)===ne);if(!keys.length)return false;
+  const prev=m[keys[0]];
+  keys.forEach(k=>{delete m[k];});
+  setAllocOverrideReason(half,ne,"");
+  logAction("OVERRIDE",ne+" ("+ht.toUpperCase()+"): "+prev+" → cleared (engine allocation restored)");
+  saveAll();autoRealloc("Override cleared — engine allocation restored ✓");
+  return true;
+}
+// Does this override need a reason? Only when it puts a pupil who chose activities for that half
+// onto a real activity; "Out of school", Supported Study and the like are neutral by nature.
+function overrideWantsReason(half,email){
+  const ne=normEmail(email),k=_halfOverrideKey(half,ne);if(k==null)return false;
+  const v=allocOverrides[String(half||"").toLowerCase()][k];
+  if(!v||v==="__UNASSIGNED__"||!findActByName_exact(v))return false;
+  return _choicesFor(formData.find(f=>normEmail(f.email)===ne),half).some(Boolean);
+}
+// Ask why an override was made. The override itself is already saved — this only adds the
+// reason — so closing the box or skipping leaves it neutral and loses nothing.
+function askOverrideReason(half,email){
+  const ne=normEmail(email),k=_halfOverrideKey(half,ne);if(k==null)return;
+  const to=allocOverrides[String(half||"").toLowerCase()][k];
+  const p=findPupilByEmail(ne);const who=p?((p.pref||p.forename||"")+" "+(p.surname||"")).trim():ne;
+  const cur=allocOverrideReason(half,ne);
+  document.querySelectorAll(".ovr-reason-overlay").forEach(x=>x.remove());
+  const ov=h("div",{className:"ovr-reason-overlay",style:{position:"fixed",top:"0",left:"0",right:"0",bottom:"0",zIndex:"1000",
+    background:"rgba(0,0,0,.35)",display:"flex",alignItems:"center",justifyContent:"center"}});
+  const box=h("div",{className:"card card-pad",style:{maxWidth:"440px",width:"92%",background:"var(--surface)"}});
+  const esc=e=>{if(e.key==="Escape")done("");};
+  function done(why){
+    ov.remove();document.removeEventListener("keydown",esc);
+    if(!why)return;
+    setAllocOverrideReason(half,ne,why);
+    logAction("OVERRIDE_REASON",ne+" ("+String(half).toUpperCase()+"): "+to+" — "+OVR_REASONS[why].label);
+    saveAll();autoRealloc("Override reason saved — allocation updated ✓");
+  }
+  box.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"6px"}},"Why this override?"));
+  box.appendChild(h("div",{style:{fontSize:"12px",color:"var(--text2)",marginBottom:"12px",lineHeight:1.5}},
+    who+" → "+to+" ("+halfLabel(half)+"). This decides their priority in later half-terms."));
+  Object.entries(OVR_REASONS).forEach(([id,r])=>box.appendChild(h("button",{className:"btn "+(id===cur?"btn-primary":"btn-ghost"),
+    style:{display:"block",width:"100%",textAlign:"left",marginBottom:"6px"},onClick:()=>done(id)},
+    h("strong",null,r.label),h("span",{style:{fontSize:"11px",marginLeft:"6px",opacity:".75"}},"— counts as "+r.counts))));
+  box.appendChild(h("button",{className:"btn btn-ghost btn-xs",onClick:()=>done("")},cur?"Keep as it is":"Skip — leave neutral"));
+  document.addEventListener("keydown",esc);
+  ov.addEventListener("click",e=>{if(e.target===ov)done("");});
+  ov.appendChild(box);document.body.appendChild(ov);
+}
+// v167: what a pupil had in each EARLIER half-term this year — the engine's fairness input.
+//   missed: earlier halves in which they did not get their first choice; each moves them up
+//     the order. "Got it" means their effective allocation (per-date entry → half-term
+//     override → engine, as getEffectiveAllocOnDate reads it) was in the same family as that
+//     half's first choice on at least one of its dates, so a pupil put on Bake-Off K by
+//     per-date entries has had Bake-Off. A half-term override counts only by its recorded
+//     reason; a central placement, or a half they made no choice for, never counts.
+//   held: every activity they were on in an earlier half — the repeat rule's input.
+// Earlier halves come from dates[], not the engine's loop, which sees only _formHalves()'s
+// two. Choices exist only for the form's halves, so any other earlier half can add to `held`
+// but never to `missed`. Engine placements come from this run (engMap), not the stored
+// results, so re-running gives the same answer.
+function allocPriorHalves(fd,half,runRows,engMap){
+  const out={missed:[],held:[]};const ne=normEmail(fd&&fd.email);if(!ne)return out;
+  const order=[];
+  sortedDateIndices().forEach(di=>{const hv=(dates[di]&&dates[di].half)||"S1";if(hv!=="LEX Week"&&!order.includes(hv))order.push(hv);});
+  const at=order.indexOf(half);if(at<=0)return out;
+  const fh=_formHalves();
+  order.slice(0,at).forEach(E=>{
+    const had=[];
+    dates.forEach((d,di)=>{if((d.half||"S1")!==E)return;const v=getEffectiveAllocOnDate(ne,di,engMap);if(v&&!had.includes(v))had.push(v);});
+    had.forEach(v=>{if(!out.held.includes(v))out.held.push(v);});
+    if(!fh.includes(E))return;
+    const first=_choicesFor(fd,E).map(_resolveChoice).find(Boolean);
+    if(!first)return;
+    if(_halfOverrideKey(E,ne)!=null){if(allocOverrideReason(E,ne)==="missed")out.missed.push(E);return;}
+    const row=(runRows||[]).find(r=>r.half===E&&normEmail(r.email)===ne);
+    if(row&&row.st==="CENTRAL")return;
+    if(!had.some(v=>_relatedAct(v,first)))out.missed.push(E);
+  });
+  return out;
+}
+// v167: the repeat rule. May pupil s take activity a from pupil h, who holds a place on it?
+// A pupil who already had a (or its family) earlier this year comes after every first-time
+// pupil who put a FIRST — and only them (Gideon, 27 Sept): a first-timer's 2nd or 3rd choice
+// competes with a repeater in the normal order, as everyone else does. The rule applies at
+// whatever choice number the repeat sits. It lowers priority for that activity only; it never
+// takes the choice away, so a repeater still gets a place that nobody who put it first needs.
+// s and h are engine slots: {pos (0 = highest priority), ch (unique choices), rep ({act: bool})}.
+function _allocBeats(s,h,a){
+  if(h.rep[a]&&!s.rep[a]&&s.ch[0]===a)return true;
+  if(s.rep[a]&&!h.rep[a]&&h.ch[0]===a)return false;
+  return s.pos<h.pos;
+}
+
 function runAllocEngineV12(){
   const log=[];if(!formData.length){allocLog=["ERROR: No form data loaded. Go to Paste Responses first."];return;}
   // v137: resolve any outstanding personal-address responses first, so a run never
@@ -8173,7 +8295,8 @@ function runAllocEngineV12(){
           s1c1:"",s1c2:"",s1c3:"",s2c1:"",s2c2:"",s2c3:"",...(origFd||{})});
         if(capU[activity]!==undefined)capU[activity]=(capU[activity]||0)+1;
         overriddenEmails.add(normEmail(email));
-        log.push("  OVERRIDE: "+email+" → "+activity);
+        const _ovrWhy=allocOverrideReason(half,email);   // v167: shown so the log explains later priority
+        log.push("  OVERRIDE: "+email+" → "+activity+(_ovrWhy?" ["+OVR_REASONS[_ovrWhy].label+"]":""));
       }
     });
 
@@ -8193,29 +8316,18 @@ function runAllocEngineV12(){
       _seenPupil.add(ne);return true;
     });
     if(_dupEmails.length)log.push("WARNING: "+_dupEmails.length+" duplicate response(s) ignored (one per pupil per half): "+[...new Set(_dupEmails)].join(", "));
+    // v167: priority comes from THIS academic year only, read from what each pupil actually had
+    // (allocPriorHalves). It used to come from allocHistory — whose 500 imported records match no
+    // current pupil — and from this run's result for the other half alone, which could not see
+    // per-date moves or overrides: pupils who did Bake-Off by per-date entry in Autumn 1 looked
+    // like they had their 3rd choice and were boosted for Bake-Off in Autumn 2.
+    const _runEng={};
+    allRes.forEach(r=>{if(r.alloc&&r.alloc!=="__UNASSIGNED__")_runEng[normEmail(r.email)+"|"+r.half]=r.alloc;});
     const remaining=_uniqueFd.filter(p=>!overriddenEmails.has(normEmail(p.email))).map(p=>{
-      const tsScore=new Date(p.timestamp||0).getTime()||0;
-      let disappointmentCount=0;
-      allocHistory.forEach(h2=>{
-        if(normEmail(h2.email)!==normEmail(p.email))return;
-        // v65: allocHistory carries two record shapes — {activity,choiceIndex} from CSV
-        // import, and full allocRes rows {alloc,lvl,...} from the in-app save buttons.
-        // Normalise both so cross-year fairness counts history written by either path.
-        const ci=(h2.choiceIndex!=null)?h2.choiceIndex:((h2.lvl||1)-1);
-        if(ci>0)disappointmentCount++;
-      });
-      const otherHalfRes=allRes.find(r=>normEmail(r.email)===normEmail(p.email)&&r.half!==half);
-      if(otherHalfRes&&otherHalfRes.lvl>1)disappointmentCount++;
-      const actHistoryCount={};
-      allocHistory.forEach(h2=>{
-        if(normEmail(h2.email)!==normEmail(p.email))return;
-        const act=h2.activity||h2.alloc;
-        if(act)actHistoryCount[act]=(actHistoryCount[act]||0)+1;
-      });
-      // FIX Bug 4: Only count other-half result in history if it would actually cause oversubscription
-      // — don't add it unconditionally as it incorrectly penalises S2 for S1 allocations
-      // (handled at allocation time below instead)
-      return{...p,tsScore,disappointmentCount,actHistoryCount,otherHalfAlloc:otherHalfRes?otherHalfRes.alloc:null};
+      const _ts=_formTimestampMs(p.timestamp);
+      const tsScore=_ts==null?Number.MAX_SAFE_INTEGER:_ts;   // v167: unreadable sorts last, never first
+      const _pr=allocPriorHalves(p,half,allRes,_runEng);
+      return{...p,tsScore,disappointmentCount:_pr.missed.length,missedHalves:_pr.missed,heldEarlier:_pr.held};
     });
 
     remaining.sort((a,b)=>{
@@ -8237,18 +8349,34 @@ function runAllocEngineV12(){
     let _hiddenIndiv=0;
 
     // Step 3: Allocate with fuzzy matching
-    remaining.forEach(p=>{
+    // v167: in three passes, so the repeat rule can hold a place back without costing the pupil
+    // their priority for anything else:
+    //   1. in priority order, settle the central cases and resolve each pupil's choices;
+    //   2. give out places (_placeNext): each pupil tries their choices in order, and a place
+    //      held by a repeater can be taken back by a first-time pupil who put it first
+    //      (_allocBeats); the displaced pupil moves straight on to their next choice, keeping
+    //      their own priority there;
+    //   3. write rows and log lines in priority order, so the table and log read as before.
+    // With no repeaters nobody is ever displaced, and the result is exactly the old one-pass
+    // loop's — lex-tests checks that on the live backup.
+    const _slots=[];
+    remaining.forEach((p,pos)=>{
+      // v148: whyNot is why each choice was passed over, in the order they were tried. Recorded on
+      // the allocation row so the Waiting List table and the per-activity totals both
+      // read the same account rather than re-deriving it.
+      const s={p,pos,log:[],row:null,ch:[],rep:{},next:0,alloc:null,lvl:null,whyNot:[],unresolved:[]};
+      _slots.push(s);
       // v162: out of school for the whole half — a place given to them is never used.
       {const _cv=_halfCoverValues(p.email,half);
         if(_cv&&_cv.every(_isOutOfSchool)){
-          log.push("  "+p.email+": out of school on every "+halfLbl+" date — no place used");
-          allRes.push({...p,alloc:"Out of school",lvl:null,st:"CENTRAL",half,isOverride:false,whyNot:[],centralReason:"out of school"});
+          s.log.push("  "+p.email+": out of school on every "+halfLbl+" date — no place used");
+          s.row={...p,alloc:"Out of school",lvl:null,st:"CENTRAL",half,isOverride:false,whyNot:[],centralReason:"out of school"};
           return;
         }
         if(_wrongHalf.has(normEmail(p.email))){
           const _d=_centralCoverFor(p.email,half)||"prescribed";
-          log.push("  "+p.email+": every "+halfLbl+" date prescribed ("+_d+") — choices not allocated in this half");
-          allRes.push({...p,alloc:_d,lvl:null,st:"CENTRAL",half,isOverride:false,whyNot:[],centralReason:"prescribed half"});
+          s.log.push("  "+p.email+": every "+halfLbl+" date prescribed ("+_d+") — choices not allocated in this half");
+          s.row={...p,alloc:_d,lvl:null,st:"CENTRAL",half,isOverride:false,whyNot:[],centralReason:"prescribed half"};
           return;
         }
         if(_cv&&_pscan.hidden.has(normEmail(p.email)))_hiddenIndiv++;
@@ -8257,62 +8385,81 @@ function runAllocEngineV12(){
       // If a pupil has no S2 choices, they should be unmatched, not given their S1 choices
       // v148: names that matched no activity, gathered so the table can attribute them
       // to the pupil rather than leaving them only in the log.
-      const _unresolvedChoices=[];
       const rawC1=_formSlot(half)==="s1"?(p.s1c1||p.c1||""):(p.s2c1||"");
       const rawC2=_formSlot(half)==="s1"?(p.s1c2||p.c2||""):(p.s2c2||"");
       const rawC3=_formSlot(half)==="s1"?(p.s1c3||p.c3||""):(p.s2c3||"");
-      const ch=[rawC1,rawC2,rawC3].map(c=>{
-        if(!c)return null;
+      [rawC1,rawC2,rawC3].forEach(c=>{
+        if(!c)return;
         const resolved=resolveActName(c,halfLbl);
-        if(!resolved&&c){log.push("  "+p.email+": \""+c+"\" NOT FOUND in "+halfLbl+" (not in activity list)");
-          _unresolvedChoices.push({email:p.email,raw:c,half});}
-        return resolved;
-      }).filter(Boolean);
-      let alloc=null,lvl=null;
-      // v148: why each choice was passed over, in the order they were tried. Recorded on
-      // the allocation row so the Waiting List table and the per-activity totals both
-      // read the same account rather than re-deriving it.
-      const whyNot=[];
-
-      for(let i=0;i<ch.length;i++){
-        if(!vn.has(ch[i])){
+        if(!resolved){s.log.push("  "+p.email+": \""+c+"\" NOT FOUND in "+halfLbl+" (not in activity list)");
+          s.unresolved.push({email:p.email,raw:c,half});return;}
+        // v167: a choice made twice counts once. Bake-Off three times over is one choice with no
+        // back-ups, not three chances at it (Gideon, 27 Sept; the form says not to). Later
+        // choices move up, as they already did past a name that wasn't found.
+        if(s.ch.includes(resolved)){s.log.push("  "+p.email+": "+resolved+" chosen more than once — counted once");return;}
+        s.ch.push(resolved);
+      });
+      s.ch.forEach(a=>{s.rep[a]=(p.heldEarlier||[]).some(x=>_relatedAct(x,a));});
+    });
+    // Who a repeater waits behind: the first-time pupils who put each activity first. And the
+    // places the engine has to give once half-term overrides have taken theirs.
+    const _firstTimers={},_enginePlaces={};
+    _slots.forEach(s=>{if(!s.row&&s.ch.length&&!s.rep[s.ch[0]])_firstTimers[s.ch[0]]=(_firstTimers[s.ch[0]]||0)+1;});
+    Object.keys(capM).forEach(a=>{_enginePlaces[a]=Math.max(0,capM[a]-(capU[a]||0));});
+    const _repNote=a=>"REPEAT — placed after first-time choosers ("+(_firstTimers[a]||0)+" waiting, "+(_enginePlaces[a]||0)+" places)";
+    const _repWhy=a=>({act:a,reason:"repeat — first-time choosers first",detail:(_firstTimers[a]||0)+" waiting, "+(_enginePlaces[a]||0)+" places"});
+    const _holders={};   // activity → the slots the engine has placed on it so far
+    function _placeNext(s){
+      while(s.next<s.ch.length){
+        const i=s.next,a=s.ch[i];
+        if(!vn.has(a)){
           // v147: this used to skip silently. A pupil whose first choice does not run in
           // this half was quietly demoted to their second, with nothing in the log to say
           // why — they then appear to have "missed out" for no visible reason.
-          whyNot.push({act:ch[i],reason:"not running"});
-          log.push("  "+p.email+": choice "+(i+1)+" "+ch[i]+" not running in "+halfLbl+" — trying next choice");
-          continue;
+          s.whyNot.push({act:a,reason:"not running"});
+          s.log.push("  "+s.p.email+": choice "+(i+1)+" "+a+" not running in "+halfLbl+" — trying next choice");
+          s.next++;continue;
         }
-        const cap=capM[ch[i]],used=capU[ch[i]]||0;
-        if(used>=cap){
-          log.push("  "+p.email+": "+ch[i]+" FULL ("+used+"/"+cap+")");
-          whyNot.push({act:ch[i],reason:"full",detail:used+"/"+cap});
-          // Add to waiting list
-          if(!waitingList[ch[i]])waitingList[ch[i]]=[];
-          waitingList[ch[i]].push({email:p.email,choiceIndex:i,half});
-          continue;
+        const cap=capM[a],used=capU[a]||0,held=_holders[a]||(_holders[a]=[]);
+        if(used<cap){s.alloc=a;s.lvl=i+1;capU[a]=used+1;held.push(s);return;}
+        // Full — but a first-time pupil who put it first takes a place back from a repeater.
+        // If more than one could give way, the lowest in the priority order does.
+        let out=null;
+        held.forEach(x=>{if(_allocBeats(s,x,a)&&(!out||x.pos>out.pos))out=x;});
+        if(out){
+          held.splice(held.indexOf(out),1,s);
+          s.alloc=a;s.lvl=i+1;
+          out.alloc=null;out.lvl=null;
+          out.whyNot.push(_repWhy(a));
+          out.log.push("  "+out.p.email+": "+a+" "+_repNote(a)+" — no place left, trying next choice");
+          if(!waitingList[a])waitingList[a]=[];
+          waitingList[a].push({email:out.p.email,choiceIndex:out.next,half});
+          out.next++;_placeNext(out);
+          return;
         }
-        if(i===0&&(p.actHistoryCount[ch[i]]||0)>0){
-          // FIX Bug 4: also count other-half alloc for same activity in oversubscription check
-          const otherHalfCount=(p.otherHalfAlloc===ch[i])?1:0;
-          const histCount=(p.actHistoryCount[ch[i]]||0)+otherHalfCount;
-          if(histCount>0){
-            const demand=remaining.filter(r=>{const rc=_formSlot(half)==="s1"?(r.s1c1||r.c1):(r.s2c1||"");return resolveActName(rc,halfLbl)===ch[i];}).length;
-            if(demand>cap){
-              // FIX Bug 3: don't skip to unmatched — fall through to 2nd/3rd choice instead
-              log.push("  "+p.email+": REPEAT PENALTY on "+ch[i]+" (done before, oversubscribed "+demand+"/"+cap+") — trying next choice");
-              whyNot.push({act:ch[i],reason:"repeat penalty",detail:demand+"/"+cap});
-              if(!waitingList[ch[i]])waitingList[ch[i]]=[];
-              waitingList[ch[i]].push({email:p.email,choiceIndex:i,half});
-              continue; // try next choice in the loop
-            }
-          }
+        // Turned away. Say so plainly when the repeat rule, not a lack of places, did it.
+        if(s.rep[a]&&held.some(x=>x.pos>s.pos&&!x.rep[a]&&x.ch[0]===a)){
+          s.whyNot.push(_repWhy(a));
+          s.log.push("  "+s.p.email+": "+a+" "+_repNote(a)+" — no place left, trying next choice");
+        }else{
+          s.log.push("  "+s.p.email+": "+a+" FULL ("+used+"/"+cap+")");
+          s.whyNot.push({act:a,reason:"full",detail:used+"/"+cap});
         }
-        alloc=ch[i];lvl=i+1;capU[ch[i]]=used+1;break;
+        // Add to waiting list
+        if(!waitingList[a])waitingList[a]=[];
+        waitingList[a].push({email:s.p.email,choiceIndex:i,half});
+        s.next++;
       }
-      const _why=whyNot.concat(_unresolvedChoices.map(u=>({act:u.raw,reason:"not found"})));
+    }
+    _slots.forEach(s=>{if(!s.row)_placeNext(s);});
+    _slots.forEach(s=>{
+      s.log.forEach(l=>log.push(l));
+      if(s.row){allRes.push(s.row);return;}
+      const p=s.p,ch=s.ch,alloc=s.alloc,lvl=s.lvl;
+      const _why=s.whyNot.concat(s.unresolved.map(u=>({act:u.raw,reason:"not found"})));
       if(alloc){
-        log.push("  "+p.email+" → "+alloc+" (choice "+lvl+(p.disappointmentCount>0?" · fairness boost":"")+")");
+        const _boost=p.disappointmentCount>0?" · fairness boost (missed 1st choice in "+p.missedHalves.map(halfLabel).join(", ")+")":"";
+        log.push("  "+p.email+" → "+alloc+" (choice "+lvl+_boost+(s.rep[alloc]?" · "+_repNote(alloc):"")+")");
         allRes.push({...p,alloc,lvl,st:lvl===1?"1ST":lvl===2?"2ND":"3RD",half,isOverride:false,whyNot:_why});
       }else{
         // v148: a pupil with no choices at all whose every date in this half is covered by
@@ -8678,11 +8825,13 @@ function _migrateRecordsToPupil(fromEmail,toEmail){
   // half-term overrides: allocOverrides[half][email]
   HALF_TERMS.map(x=>x.toLowerCase()).forEach(ht=>{
     const m=allocOverrides[ht];if(!m)return;
+    const rs=allocOverrides._reason&&allocOverrides._reason[ht];   // v167: the reason moves with it
     Object.keys(m).forEach(k=>{
       if(normEmail(k)!==from)return;
-      if(m[to]===undefined){m[to]=m[k];moved.halfOverrides++;}
+      if(m[to]===undefined){m[to]=m[k];moved.halfOverrides++;if(rs&&rs[from]&&!rs[to])rs[to]=rs[from];}
       delete m[k];
     });
+    if(rs)delete rs[from];
   });
   // per-date overrides: di|email, journalled so the move reaches the cloud too
   Object.keys(allocDateOverrides).forEach(k=>{

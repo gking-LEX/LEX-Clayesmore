@@ -365,7 +365,8 @@ S("v148/v150 — Central allocation");
     mk({ ["0|" + E]: "X", ["1|" + E]: "X", ["2|" + E]: "X" })(E, "A2") === "");
   t("CENTRAL rows excluded from the missed-out table", has('if(res.st==="CENTRAL")return;'));
   t("central only applies when no choices were made", has("if(!ch.length&&_central){"));
-  t("reasons are recorded against each rejected choice", has("whyNot.push({act:ch[i],reason:"));
+  // v167: anchor moved with the three-pass engine; behaviour is also checked in the v167 section.
+  t("reasons are recorded against each rejected choice", has('s.whyNot.push({act:a,reason:"not running"})') && has('s.whyNot.push({act:a,reason:"full",'));
   t("a choice not running that half is logged", has("not running in "));
 }
 
@@ -925,6 +926,255 @@ S("v165 — Past Saturdays are history, not plan");
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+S("v167 — Allocation priority: timestamps, fairness, repeats, override reasons");
+// The whole engine, extracted from the shipped HTML. Only UI and persistence are stubbed.
+// `var` so the real-data section below can run the same engine over the backup.
+var ENG_SRC = [
+  grab("function normEmail(e){", "\r\n", "normEmail"),
+  grab("function parseDateDmy(", "\r\n}", "parseDateDmy"),
+  grab("function _formTimestampMs(s){", "\r\n}", "_formTimestampMs"),
+  grab("function sortedDateIndices(){", "\r\n}", "sortedDateIndices"),
+  grab("function _formHalves(){", "\r\n}", "_formHalves"),
+  grab("function _formSlot(half){", "\r\n", "_formSlot"),
+  grab("function _h1(){", "\r\n", "_h1"),
+  grab("function _h2(){", "\r\n", "_h2"),
+  grab("function displayYg(", "\r\n}", "displayYg"),
+  grab("function _stripChargeSuffix(s){", "\r\n}", "_stripChargeSuffix"),
+  grab("function findActByName(name){", "\r\n}", "findActByName"),
+  grab("function getEffectiveAllocOnDate(ne,di,engMap){", "\r\n}", "getEffectiveAllocOnDate"),
+  grab("function _halfCoverValues(email,half){", "\r\n}", "_halfCoverValues"),
+  grab("function _isOutOfSchool(v){", "\r\n", "_isOutOfSchool"),
+  grab("function _actFamily(n){", "\r\n", "_actFamily"),
+  grab("function _relatedAct(a,b){", "\r\n", "_relatedAct"),
+  grab("function _actOpenToYg(a,yg){", "\r\n}", "_actOpenToYg"),
+  grab("function _choicesFor(fd,half){", "\r\n}", "_choicesFor"),
+  grab("function _resolveChoice(raw){", "\r\n}", "_resolveChoice"),
+  grab("function allocPrescribedChoiceScan(half,rows){", "\r\n}", "allocPrescribedChoiceScan"),
+  grab("function _centralCoverFor(email,half){", "\r\n}", "_centralCoverFor"),
+  grab("const OVR_REASONS={", "\r\n};", "OVR_REASONS"),
+  grab("function _halfOverrideKey(half,ne){", "\r\n}", "_halfOverrideKey"),
+  grab("function allocOverrideReason(half,email){", "\r\n}", "allocOverrideReason"),
+  grab("function setAllocOverrideReason(half,email,why){", "\r\n}", "setAllocOverrideReason"),
+  grab("function clearHalfOverride(half,email){", "\r\n}", "clearHalfOverride"),
+  grab("function overrideWantsReason(half,email){", "\r\n}", "overrideWantsReason"),
+  grab("function allocPriorHalves(fd,half,runRows,engMap){", "\r\n}", "allocPriorHalves"),
+  grab("function _allocBeats(s,h,a){", "\r\n}", "_allocBeats"),
+  grab("function runAllocEngineV12(){", "\r\n}\r\n", "runAllocEngineV12")
+].join("\n");
+var ENG = (w) => new Function("W", `
+  let acts=W.acts,pupils=W.pupils||[],dates=W.dates,formData=W.fd,allocOverrides=W.ao||{},
+      allocDateOverrides=W.ado||{},allocHistory=W.hist||[],allocRes=W.res||[],
+      waitingList={},allocLog=[],_findActFuzzyCache=null,_engMapCache=null;
+  const reruns=[],actions=[];
+  const _actMap=new Map();acts.forEach(a=>_actMap.set(a.n,a));        // last wins, as _actCache does
+  function findActByName_exact(n){return _actMap.get(n)||null;}
+  function findPupilByEmail(e){return pupils.find(p=>normEmail(p.email)===normEmail(e))||null;}
+  function halfLabel(h){return h;}
+  function autoLinkFormEmails(){return {linked:0,pending:0};}
+  function logAction(a,d){actions.push(a+" "+d);}
+  function takeSnapshot(){} function saveAll(){} function invalidateCaches(){}
+  function autoRealloc(m){reruns.push(m);}
+  ${ENG_SRC}
+  return {run(){runAllocEngineV12();return {res:allocRes,log:allocLog,wl:waitingList};},
+    get ao(){return allocOverrides;},reruns,actions,_formTimestampMs,_allocBeats,allocPriorHalves,
+    allocOverrideReason,setAllocOverrideReason,clearHalfOverride,overrideWantsReason,_halfOverrideKey};`)(w);
+{
+  // Synthetic worlds only. Every name and address below is invented (public repository).
+  const D = [{ full: "05/09/2026", half: "A1" }, { full: "12/09/2026", half: "A1" },
+             { full: "07/11/2026", half: "A2" }, { full: "14/11/2026", half: "A2" }];
+  const act = (n, cap, di) => ({ n, cap, di: di || [0, 1, 2, 3] });
+  const resp = (email, ts, a1, a2) => { a1 = a1 || []; a2 = a2 || [];
+    return { email, timestamp: ts, s1c1: a1[0] || "", s1c2: a1[1] || "", s1c3: a1[2] || "",
+      c1: a1[0] || "", c2: a1[1] || "", c3: a1[2] || "", s2c1: a2[0] || "", s2c2: a2[1] || "", s2c3: a2[2] || "" }; };
+  const row = (out, email, half) => out.res.find(r => ne(r.email) === email && r.half === half) || {};
+  const ts = n => "0" + n + "/09/2026 09:00:00";           // day n of September, UK order
+
+  // ── Fix 1: timestamps are read day-first ──────────────────────────────────
+  const E0 = ENG({ acts: [], dates: D, fd: [] });
+  const ms = E0._formTimestampMs;
+  t("16/06 08:00 sorts before 07/09 09:00", ms("16/06/2026 08:00:00") < ms("07/09/2026 09:00:00"));
+  t("13/06 sorts before 14/06", ms("13/06/2026 10:00:00") < ms("14/06/2026 10:00:00"));
+  t("time of day counts", ms("06/09/2026 11:22:06") < ms("06/09/2026 18:03:52"));
+  t("an unreadable timestamp is null, not zero", ms("") === null && ms("soon") === null && ms(undefined) === null);
+  t("an impossible month is refused", ms("12/13/2026 09:00:00") === null);
+  {
+    // 02/09 (2 Sept) and 08/03 (8 March): read US-style they swap order. One Golf place.
+    const out = ENG({ dates: D, acts: [act("Golf", 1), act("Chess", 9)], fd: [
+      resp("sept@c.com", "02/09/2026 09:00:00", ["Golf", "Chess"]),
+      resp("march@c.com", "08/03/2026 09:00:00", ["Golf", "Chess"])] }).run();
+    t("the earlier response (8 March) gets the place", row(out, "march@c.com", "A1").alloc === "Golf");
+    const out2 = ENG({ dates: D, acts: [act("Golf", 1), act("Chess", 9)], fd: [
+      resp("junk@c.com", "not a date", ["Golf", "Chess"]),
+      resp("real@c.com", "20/09/2026 09:00:00", ["Golf", "Chess"])] }).run();
+    t("an unreadable timestamp goes last, not first", row(out2, "real@c.com", "A1").alloc === "Golf"
+      && row(out2, "junk@c.com", "A1").alloc === "Chess");
+    t("no response scores 0 or NaN", out2.res.every(r => r.tsScore > 0 && Number.isFinite(r.tsScore)));
+  }
+
+  // ── Fix 2: priority from what each pupil actually had this year ──────────
+  {
+    const acts = [act("Golf", 1), act("Chess", 9), act("Cookery", 9), act("Bake-Off", 1), act("Bake-Off K", 9, [0, 1])];
+    const fd = [
+      resp("gina@c.com", ts(1), ["Golf", "Chess"], ["Cookery"]),       // gets Golf in A1
+      resp("yuri@c.com", ts(3), ["Golf", "Chess"], ["Golf", "Chess"]), // misses Golf in A1
+      resp("zoe@c.com", ts(2), ["Cookery"], ["Golf", "Chess"]),        // earlier than Yuri, had her 1st
+      resp("wes@c.com", ts(1), ["Bake-Off"], ["Chess"]),               // takes the one Bake-Off place
+      resp("xan@c.com", ts(4), ["Bake-Off", "Cookery"], ["Chess"])     // Cookery by engine, Bake-Off K per date
+    ];
+    const ado = { "0|xan@c.com": "Bake-Off K", "1|xan@c.com": "Bake-Off K" };
+    const out = ENG({ dates: D, acts, fd, ado }).run();
+    t("missing a 1st choice in A1 moves a pupil up in A2", row(out, "yuri@c.com", "A2").alloc === "Golf"
+      && row(out, "zoe@c.com", "A2").alloc === "Chess");
+    t("and the log says which half they missed", out.log.some(l => l.includes("yuri@c.com → Golf") && l.includes("missed 1st choice in A1")));
+    t("a per-date move within the family counts as having had it (Bake-Off K for Bake-Off)",
+      row(out, "xan@c.com", "A1").lvl === 2 && row(out, "xan@c.com", "A2").disappointmentCount === 0);
+    t("the first half has no earlier half to boost from", out.res.filter(r => r.half === "A1").every(r => !r.disappointmentCount));
+    t("allocHistory is no longer read", (() => {
+      const o2 = ENG({ dates: D, acts, fd, ado, hist: [{ email: "zoe@c.com", activity: "Golf", choiceIndex: 2 }] }).run();
+      return JSON.stringify(o2.res.map(r => r.alloc)) === JSON.stringify(out.res.map(r => r.alloc));
+    })());
+    // Out of school on every A1 date: a central placement never counts as missing out.
+    const out3 = ENG({ dates: D, acts, fd: [resp("olly@c.com", ts(1), ["Golf"], ["Chess"])],
+      ado: { "0|olly@c.com": "Out of school", "1|olly@c.com": "Out of school" } }).run();
+    t("a central placement never counts as a miss", row(out3, "olly@c.com", "A1").st === "CENTRAL"
+      && row(out3, "olly@c.com", "A2").disappointmentCount === 0);
+    const out4 = ENG({ dates: D, acts, fd: [resp("quilla@c.com", ts(1), [], ["Chess"])] }).run();
+    t("no choice made for a half is neutral", row(out4, "quilla@c.com", "A2").disappointmentCount === 0);
+  }
+
+  // ── Fix 3: override reasons ───────────────────────────────────────────────
+  {
+    const acts = [act("Golf", 9), act("Chess", 9)];
+    const fd = [resp("vic@c.com", ts(1), ["Chess"], ["Golf"])];
+    const mk = reason => {
+      const ao = { a1: { "vic@c.com": "Golf" } };
+      if (reason) ao._reason = { a1: { "vic@c.com": { to: "Golf", why: reason } } };
+      return ENG({ dates: D, acts, fd: JSON.parse(JSON.stringify(fd)), ao });
+    };
+    t("an override with no reason is neutral (existing overrides keep their meaning)", row(mk("").run(), "vic@c.com", "A2").disappointmentCount === 0);
+    t("'Swapped after missing out' boosts the next half", row(mk("missed").run(), "vic@c.com", "A2").disappointmentCount === 1);
+    t("'Changed first choice' does not", row(mk("changed").run(), "vic@c.com", "A2").disappointmentCount === 0);
+    t("'School decision' does not", row(mk("school").run(), "vic@c.com", "A2").disappointmentCount === 0);
+    t("the reason shows in the engine log", mk("missed").run().log.some(l => l.includes("OVERRIDE: vic@c.com → Golf [Swapped after missing out]")));
+    const W = mk("missed");
+    W.ao.a1["vic@c.com"] = "Chess";
+    t("a reason stops applying when the override is changed by any route", W.allocOverrideReason("A1", "vic@c.com") === "");
+    const W2 = ENG({ dates: D, acts, fd, ao: { a1: { "Vic@C.com": "Golf" } } });
+    W2.setAllocOverrideReason("A1", "vic@c.com", "changed");
+    t("a reason finds an override stored in mixed case", W2.allocOverrideReason("a1", " VIC@c.com") === "changed");
+    W2.setAllocOverrideReason("A1", "vic@c.com", "bogus");
+    t("an unknown reason clears it rather than storing junk", W2.allocOverrideReason("A1", "vic@c.com") === "");
+    const W3 = ENG({ dates: D, acts, fd, ao: {} });
+    W3.setAllocOverrideReason("A1", "vic@c.com", "missed");
+    t("no reason is stored without an override", !W3.ao._reason || !W3.ao._reason.a1 || !W3.ao._reason.a1["vic@c.com"]);
+    const W4 = ENG({ dates: D, acts, fd, ao: { a1: { "vic@c.com": "Golf", "out@c.com": "Out of school", "un@c.com": "__UNASSIGNED__" } } });
+    t("a reason is asked for when a chooser is put on a real activity", W4.overrideWantsReason("A1", "vic@c.com"));
+    t("not for Out of school", !W4.overrideWantsReason("A1", "out@c.com"));
+    t("not for Unassigned", !W4.overrideWantsReason("A1", "un@c.com"));
+    t("not for a pupil with no override", !W4.overrideWantsReason("A2", "vic@c.com"));
+    const rs = mk("missed").run();
+    t("the _reason store is never mistaken for a half's overrides", rs.res.filter(r => r.isOverride).length === 1);
+    t("both override dropdowns ask for a reason", (src.match(/askOverrideReason\((half|r\.half),ne\)/g) || []).length === 2);
+    t("a changed override drops its old reason, in both dropdowns",
+      has('setAllocOverrideReason(half,ne,"");   // v167: a new value needs its own reason')
+      && has('setAllocOverrideReason(r.half,ne,"");   // v167: a new value needs its own reason'));
+  }
+  {
+    // The reason moves with the override when a response is linked to a pupil.
+    const ao = { a1: { "old@gmail.com": "Golf" }, _reason: { a1: { "old@gmail.com": { to: "Golf", why: "missed" } } } };
+    new Function("attendance", "allocOverrides", "allocDateOverrides", "normEmail", "HALF_TERMS", "_touchedOvrKeys",
+      "dateOvrUpsert", "_queueOvrDelete",
+      grab("function _migrateRecordsToPupil(fromEmail,toEmail){", "\r\n}", "_migrateRecordsToPupil") + "\nreturn _migrateRecordsToPupil;")(
+      {}, ao, {}, ne, ["A1"], new Set(), () => Promise.resolve(true), () => {})("old@gmail.com", "new@c.com");
+    t("a reason moves with its override to the school address",
+      ao._reason.a1["new@c.com"] && ao._reason.a1["new@c.com"].why === "missed" && !ao._reason.a1["old@gmail.com"]);
+  }
+
+  // ── Fix 4: repeats wait behind first-time 1st choosers; they are not barred ─
+  {
+    // "Held" comes from the effective allocation, so a per-date entry in A1 makes a repeater.
+    const acts = [act("Golf", 1), act("Chess", 1), act("Cookery", 1), act("Karting", 9)];
+    const heldGolf = e => ({ ["0|" + e]: "Golf" });
+    const run = (fd, ado, golfCap) => ENG({ dates: D, fd, ado,
+      acts: acts.map(a => a.n === "Golf" && golfCap ? act("Golf", golfCap) : a) }).run();
+
+    let out = run([resp("rob@c.com", ts(1), [], ["Golf", "Cookery"]), resp("nia@c.com", ts(2), [], ["Golf", "Cookery"])],
+      heldGolf("rob@c.com"), 2);
+    t("a repeater GETS the place when there is room", row(out, "rob@c.com", "A2").alloc === "Golf" && row(out, "nia@c.com", "A2").alloc === "Golf");
+    t("and the log flags the repeat", out.log.some(l => l.includes("rob@c.com → Golf") && l.includes("REPEAT — placed after first-time choosers (1 waiting, 2 places)")));
+
+    out = run([resp("rob@c.com", ts(1), [], ["Golf", "Cookery"]), resp("nia@c.com", ts(2), [], ["Golf", "Cookery"])], heldGolf("rob@c.com"));
+    t("a repeater LOSES it to a first-time 1st chooser when there isn't", row(out, "nia@c.com", "A2").alloc === "Golf"
+      && row(out, "rob@c.com", "A2").alloc === "Cookery" && row(out, "rob@c.com", "A2").lvl === 2);
+    t("the reason is recorded against the choice", (row(out, "rob@c.com", "A2").whyNot || []).some(w => w.act === "Golf" && /^repeat/.test(w.reason)));
+    t("and the log says so", out.log.some(l => l.includes("rob@c.com: Golf REPEAT — placed after first-time choosers (1 waiting, 1 places) — no place left")));
+    t("the repeater is on the Golf waiting list", (out.wl.Golf || []).some(w => w.email === "rob@c.com" && w.half === "A2"));
+
+    out = run([resp("cal@c.com", ts(1), [], ["Chess"]),
+               resp("rob@c.com", ts(2), [], ["Golf", "Cookery"]),
+               resp("meg@c.com", ts(3), [], ["Chess", "Golf", "Karting"])], heldGolf("rob@c.com"));
+    t("a first-timer's 2nd choice does not outrank a repeater's 1st", row(out, "rob@c.com", "A2").alloc === "Golf"
+      && row(out, "meg@c.com", "A2").alloc === "Karting");
+
+    out = run([resp("cal@c.com", ts(1), [], ["Chess"]),
+               resp("rob@c.com", ts(2), [], ["Chess", "Golf", "Karting"]),
+               resp("nia@c.com", ts(3), [], ["Golf", "Karting"])], heldGolf("rob@c.com"));
+    t("the rule applies to a repeated 2nd choice too", row(out, "nia@c.com", "A2").alloc === "Golf"
+      && row(out, "rob@c.com", "A2").alloc === "Karting");
+
+    out = run([resp("rob@c.com", ts(1), [], ["Golf", "Cookery"]),
+               resp("lou@c.com", ts(2), [], ["Cookery", "Karting"]),
+               resp("nia@c.com", ts(3), [], ["Golf"])], heldGolf("rob@c.com"));
+    t("a displaced repeater keeps their priority for their next choice", row(out, "nia@c.com", "A2").alloc === "Golf"
+      && row(out, "rob@c.com", "A2").alloc === "Cookery" && row(out, "lou@c.com", "A2").alloc === "Karting");
+
+    out = ENG({ dates: D, acts: [act("Bake-Off", 1), act("Bake-Off K", 9, [0, 1]), act("Karting", 9)],
+      fd: [resp("rob@c.com", ts(1), [], ["Bake-Off", "Karting"]), resp("nia@c.com", ts(2), [], ["Bake-Off", "Karting"])],
+      ado: { "0|rob@c.com": "Bake-Off K" } }).run();
+    t("a family member counts as a repeat (Bake-Off K then Bake-Off)", row(out, "nia@c.com", "A2").alloc === "Bake-Off");
+
+    out = run([resp("ann@c.com", ts(1), [], ["Golf", "Cookery"]), resp("ben@c.com", ts(2), [], ["Golf", "Cookery"])], {});
+    t("with no repeaters the order is the plain priority order", row(out, "ann@c.com", "A2").alloc === "Golf"
+      && row(out, "ben@c.com", "A2").alloc === "Cookery" && !out.log.some(l => l.includes("REPEAT")));
+
+    const B = E0._allocBeats, sl = (pos, ch, rep) => ({ pos, ch, rep: rep || {} });
+    t("rule: first-time 1st chooser beats a repeater", B(sl(5, ["Golf"]), sl(1, ["Golf"], { Golf: true }), "Golf"));
+    t("rule: a repeater never beats a first-time 1st chooser", !B(sl(1, ["Golf"], { Golf: true }), sl(5, ["Golf"]), "Golf"));
+    t("rule: a first-timer's 2nd choice uses the plain order", !B(sl(5, ["Chess", "Golf"]), sl(1, ["Golf"], { Golf: true }), "Golf"));
+    t("rule: two repeaters use the plain order", B(sl(1, ["Golf"], { Golf: true }), sl(5, ["Golf"], { Golf: true }), "Golf"));
+  }
+
+  // ── Gideon's addition: a choice made more than once counts once ────────────
+  {
+    const acts = [act("Bake-Off", 1), act("Golf", 9)];
+    const out = ENG({ dates: D, acts, fd: [resp("first@c.com", ts(1), ["Bake-Off"]),
+      resp("tri@c.com", ts(2), ["Bake-Off", "Bake-Off", "Bake-Off"]),
+      resp("dup@c.com", ts(3), ["Bake-Off", "Bake-Off", "Golf"])] }).run();
+    t("Bake-Off three times over is one choice with no back-ups", row(out, "tri@c.com", "A1").st === "UNMATCHED");
+    t("it is refused once, not three times", (row(out, "tri@c.com", "A1").whyNot || []).filter(w => w.act === "Bake-Off").length === 1
+      && out.wl["Bake-Off"].filter(w => w.email === "tri@c.com").length === 1);
+    t("a real back-up after a repeat moves up to 2nd", row(out, "dup@c.com", "A1").alloc === "Golf" && row(out, "dup@c.com", "A1").lvl === 2);
+    t("the log notes the duplicate", out.log.some(l => l.includes("tri@c.com: Bake-Off chosen more than once — counted once")));
+  }
+
+  // ── Fix 5: a half-term override can be cleared ────────────────────────────
+  {
+    const W = ENG({ dates: D, acts: [act("Golf", 9)], fd: [],
+      ao: { a1: { "Kim@C.com": "Golf", "other@c.com": "Golf" }, _reason: { a1: { "kim@c.com": { to: "Golf", why: "missed" } } } } });
+    t("clearing removes an override stored in mixed case", W.clearHalfOverride("A1", "kim@c.com") === true && W._halfOverrideKey("A1", "kim@c.com") === null);
+    t("its reason goes with it", !W.ao._reason.a1["kim@c.com"]);
+    t("other pupils' overrides are untouched", W.ao.a1["other@c.com"] === "Golf");
+    t("the engine re-runs so the pupil is allocated again", W.reruns.length === 1);
+    t("the clear is logged", W.actions.some(a => a.startsWith("OVERRIDE kim@c.com (A1): Golf → cleared")));
+    t("clearing a pupil with no override does nothing", W.clearHalfOverride("A1", "nobody@c.com") === false && W.reruns.length === 1);
+    t("Results & Overrides offers Clear", has('if(_halfOverrideKey(half,normEmail(r.email))!=null){') && has('if(val==="CLEAR__"){clearHalfOverride(half,ne);return;}'));
+    t("the Waiting List offers Clear", has('if(_halfOverrideKey(r.half,normEmail(r.email))!=null)ovrSel.appendChild(h("option",{value:"CLEAR__"}')
+      && has('if(val==="CLEAR__"){clearHalfOverride(r.half,ne);'));
+    t("the unreachable Overrides screen is gone", !has("function renderAllocOverrides("));
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 S("Real data (from the supplied backup)");
 if (!skipIf(!BK, "no backup supplied — real-data checks")) {
   t("every roster house is normalised",
@@ -958,6 +1208,40 @@ if (!skipIf(!BK, "no backup supplied — real-data checks")) {
   });
   const hiddenOut = W.allocMaskedPlacements().filter(m => m.full && m.kind === "out").length;
   console.log(`  note: ${hiddenOut} engine place(s) held by pupils out of school on every date of the activity`);
+
+  // v167: the shipped engine over the live backup
+  const world = () => ENG({ acts: BK.acts, pupils: BK.pupils, dates: BK.dates, fd: JSON.parse(JSON.stringify(BK.formData)),
+    ao: JSON.parse(JSON.stringify(BK.allocOverrides || {})), ado: BK.allocDateOverrides || {}, hist: BK.allocHistory || [],
+    res: JSON.parse(JSON.stringify(BK.allocRes || [])) });
+  const Wr = world(), R1 = Wr.run(), keyOf = r => [ne(r.email), r.half, r.alloc, r.st].join("|");
+  const first = R1.res.map(keyOf).join("\n");
+  t("re-running the engine gives the same allocation", Wr.run().res.map(keyOf).join("\n") === first);
+  const scored = R1.res.filter(r => "tsScore" in r);
+  const unread = scored.filter(r => !(r.tsScore > 0 && r.tsScore < Number.MAX_SAFE_INTEGER));
+  t("every response timestamp reads (no score of 0, NaN or unreadable)", scored.length > 0 && unread.length === 0, unread.length + " of " + scored.length);
+  const fam = n => String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ")[0];
+  const a1di = BK.dates.map((_, i) => i).filter(i => BK.dates[i].half === "A1");
+  const bakers = BK.formData.filter(f => fam(f.s1c1 || f.c1) === "bake"
+    && a1di.some(di => fam(BK.allocDateOverrides[di + "|" + ne(f.email)]) === "bake"));
+  const credited = bakers.filter(f => { const r = R1.res.find(x => x.half === "A2" && ne(x.email) === ne(f.email));
+    return r && (r.missedHalves || []).includes("A1"); });
+  if (bakers.length) t("Bake-Off by per-date entry in A1 earns no A1 'missed' credit", credited.length === 0, credited.length + " of " + bakers.length);
+  t("A1 has no earlier half, so nobody there is boosted or treated as a repeat",
+    R1.res.filter(r => r.half === "A1").every(r => !r.disappointmentCount && !(r.whyNot || []).some(w => /^repeat/.test(w.reason))));
+  const overCap = [];
+  ["A1", "A2"].forEach(hv => {
+    const eng = {}, ovr = {};
+    R1.res.filter(r => r.half === hv && r.alloc).forEach(r => {
+      if (r.isOverride) ovr[r.alloc] = (ovr[r.alloc] || 0) + 1;
+      else if (/^(1ST|2ND|3RD)$/.test(r.st)) eng[r.alloc] = (eng[r.alloc] || 0) + 1; });
+    Object.entries(eng).forEach(([a, n]) => { const A = BK.acts.find(x => x.n === a);
+      if (A && n > Math.max(0, A.cap - (ovr[a] || 0))) overCap.push(hv + " " + a + " " + n); });
+  });
+  t("the engine never places beyond capacity left after overrides", overCap.length === 0, overCap.join(", "));
+  const changed = R1.res.filter(r => { const s = (BK.allocRes || []).find(x => ne(x.email) === ne(r.email) && x.half === r.half);
+    return !s || s.alloc !== r.alloc || s.st !== r.st; }).length;
+  console.log(`  note: ${changed} of ${R1.res.length} allocation row(s) differ from the backup's stored results; ` +
+    `${bakers.length} A1 Bake-Off chooser(s) with Bake-Off per-date entries`);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
