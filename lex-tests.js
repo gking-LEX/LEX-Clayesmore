@@ -1602,6 +1602,91 @@ var CHK = w => new Function("W", `
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+S("v170 — Leavers and lead codes");
+var LVR_SRC = [
+  grab("function h(tag,attrs,...ch){", "\r\n}", "h"),
+  grab("function parseDateDmy(", "\r\n}", "parseDateDmy"),
+  grab("function _todayYmd(", "\r\n", "_todayYmd"),
+  grab("function saGet(", "\r\n", "saGet"),
+  grab("function saCode(", "\r\n", "saCode"),
+  grab("const STAFF_TAIL_ORDER=", "\r\n", "STAFF_TAIL_ORDER"),
+  grab("function staffSortKey(", "\r\n}", "staffSortKey"),
+  grab("function sortedStaff(", "\r\n", "sortedStaff"),
+  grab("function _staffCodeSelect(", "\r\n}", "_staffCodeSelect"),
+  grab("function staffRemovalPlan(", "\r\n}", "staffRemovalPlan"),
+  grab("function applyStaffRemoval(", "\r\n}", "applyStaffRemoval")
+].join("\n");
+// Just enough of a DOM for the real h() to build a <select> the test can read.
+var LVR = w => new Function("W", `
+  class Node{} class El extends Node{constructor(t){super();this.tagName=t.toUpperCase();this.style={};this.kids=[];this.attrs={};this.on={};this.className="";}
+    appendChild(c){this.kids.push(c);return c;} setAttribute(k,v){this.attrs[k]=String(v);} addEventListener(t,f){this.on[t]=f;}}
+  class Txt extends Node{constructor(s){super();this.text=s;}}
+  const document={createElement:t=>new El(t),createTextNode:s=>new Txt(s)};
+  let acts=W.acts,staff=W.staff,sa=W.sa,dates=W.dates;
+  ${LVR_SRC}
+  const opts=sel=>sel.kids.map(o=>({v:o.attrs.value,text:o.kids.map(k=>k.text).join(""),sel:!!o.selected}));
+  return {staffRemovalPlan,applyStaffRemoval,_staffCodeSelect,opts,get staff(){return staff;},get sa(){return sa;}};`)(w);
+{
+  // Invented staff and activities — this file is in a public repository.
+  const world = () => ({
+    dates: [{ full: "12/09/2026" }, { full: "03/10/2026" }, { full: "10/10/2026" }, { full: "TBC" }],
+    staff: [{ c: "AAA", n: "Ann Able" }, { c: "LVR", n: "Lee Vere" }, { c: "LV", n: "Liv Vane" }, { c: "CCC", n: "Cal Cee" }],
+    acts: [
+      { id: "g", n: "Golf", lead: "LVR", sessALead: "LVR", sessBLead: "LVR", sessA: "Golf", sessB: "Golf", staff: ["CCC", "LVR", "LV"], di: [0, 1, 2] },
+      { id: "c", n: "Chess then Draughts", lead: "AAA", sessALead: "AAA", sessBLead: "LVR", sessA: "Chess", sessB: "Draughts", staff: [], di: [1, 2] },
+      { id: "k", n: "Knitting", lead: "AAA", sessALead: "AAA", sessBLead: "AAA", staff: ["LVR"], di: [2] }
+    ],
+    sa: { "0|LVR": { act: "Golf" }, "1|LVR|A": { act: "Golf" }, "2|LVR": { act: "Golf" }, "3|LVR": { act: "Golf" },
+          "2|CCC": { act: "Golf" }, "2|LV": { act: "Golf" } }
+  });
+  const TODAY = 20261003;   // 12/09 past, 03/10 today, 10/10 to come, "TBC" unreadable
+  const W1 = LVR(world()), plan = W1.staffRemovalPlan("LVR", TODAY);
+  t("finds every lead field holding the code", plan.leads.map(l => l.act.n + ":" + l.field).join(",") ===
+    "Golf:lead,Golf:sessALead,Golf:sessBLead,Chess then Draughts:sessBLead", plan.leads.map(l => l.act.n + ":" + l.field).join(","));
+  t("finds every activity listing them as additional staff", plan.tags.map(x => x.act.n).join(",") === "Golf,Knitting");
+  t("only dates after today count as upcoming", JSON.stringify(plan.future) === '["2|LVR"]', JSON.stringify(plan.future));
+  t("past dates, today and unreadable dates are kept as the record", plan.past.sort().join(",") === "0|LVR,1|LVR|A,3|LVR", plan.past.join(","));
+  t("another code that starts the same (LV) is not caught up in it", !plan.future.includes("2|LV") && !plan.past.includes("2|LV"));
+  const pLV = W1.staffRemovalPlan("LV", TODAY);
+  t("…nor, removing LV, is LVR", JSON.stringify(pLV.future) === '["2|LV"]' && pLV.past.length === 0 && pLV.leads.length === 0
+    && pLV.tags.map(x => x.act.n).join() === "Golf", JSON.stringify(pLV.future) + JSON.stringify(pLV.past));
+  W1.applyStaffRemoval(plan, true);
+  t("remove and clear: off the roster", !W1.staff.some(s => s.c === "LVR") && W1.staff.length === 3);
+  const W1acts = (() => { const w = world(); const W = LVR(w); W.applyStaffRemoval(W.staffRemovalPlan("LVR", TODAY), true); return { w, W }; })();
+  const g = W1acts.w.acts.find(a => a.id === "g"), c = W1acts.w.acts.find(a => a.id === "c"), k = W1acts.w.acts.find(a => a.id === "k");
+  t("…their leads are cleared, all three on Golf", g.lead === "" && g.sessALead === "" && g.sessBLead === "");
+  t("…a split's P4 lead is cleared and its P1 lead left alone", c.sessBLead === "" && c.sessALead === "AAA" && c.lead === "AAA");
+  t("…their additional-staff tags go, others stay", JSON.stringify(g.staff) === '["CCC","LV"]' && JSON.stringify(k.staff) === "[]");
+  const sa1 = W1acts.W.sa;
+  t("…their upcoming calendar entry goes", !("2|LVR" in sa1));
+  t("…their past, today's and unreadable-date entries stay", "0|LVR" in sa1 && "1|LVR|A" in sa1 && "3|LVR" in sa1);
+  t("…other people's entries on the same date stay", "2|CCC" in sa1 && "2|LV" in sa1);
+  const w2 = world(), W2 = LVR(w2); W2.applyStaffRemoval(W2.staffRemovalPlan("LVR", TODAY), false);
+  t("remove and leave: off the roster, nothing else touched", !W2.staff.some(s => s.c === "LVR")
+    && w2.acts[0].lead === "LVR" && w2.acts[0].staff.includes("LVR") && "2|LVR" in W2.sa && Object.keys(W2.sa).length === 6);
+  // The lead picker.
+  const W3 = LVR(world());
+  let picked = null;
+  const s1 = W3._staffCodeSelect("AAA", v => { picked = v; }, "75px"), o1 = W3.opts(s1);
+  t("picker: TBC first, then the roster", o1[0].v === "" && o1[0].text === "TBC" && o1.length === 1 + 4);
+  t("picker: the stored code is the one selected", o1.filter(o => o.sel).map(o => o.v).join() === "AAA");
+  s1.on.change({ target: { value: "CCC" } });
+  t("picker: choosing someone hands their code back", picked === "CCC");
+  const o2 = W3.opts(W3._staffCodeSelect("", () => {}));
+  t("picker: an empty lead shows TBC", o2.filter(o => o.sel).map(o => o.v).join() === "");
+  const s3 = W3._staffCodeSelect("Zorbo", () => {}), o3 = W3.opts(s3);
+  t("picker: a code not on the roster stays visible and selected, marked", o3.some(o => o.v === "Zorbo" && o.sel && /not on roster/.test(o.text)));
+  t("picker: …and the box is shown in red with a reason", s3.style.color === "var(--red)" && /not on the staff roster/.test(s3.attrs.title || ""));
+  t("picker: a known code is not flagged", !W3._staffCodeSelect("AAA", () => {}).style.color);
+  // Wiring in the page.
+  t("the main Lead uses the roster picker", has('const ls=_staffCodeSelect(a.lead,v=>{a.lead=v;syncRosterToCalendar();rebuildAdminPreserveScroll();},"75px"); // v170'));
+  t("the Split panel's P1 and P4 leads use it too (no free text)",
+    has('colA.appendChild(mkLeadSplit("Lead","sessALead"));') && has('colB.appendChild(mkLeadSplit("Lead","sessBLead"));') && !has('mkSplit("Lead code"'));
+  t("removing staff goes through the dialog", has("onClick:()=>confirmStaffRemoval(s)},\"✕\")) // v170"));
+  t("the old removal that deleted every date, past included, is gone", !has("Object.keys(sa).forEach(k=>{if(saCode(k)===sc)delete sa[k];});"));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 S("Real data (from the supplied backup)");
 if (!skipIf(!BK, "no backup supplied — real-data checks")) {
   t("every roster house is normalised",
@@ -1669,6 +1754,17 @@ if (!skipIf(!BK, "no backup supplied — real-data checks")) {
     return !s || s.alloc !== r.alloc || s.st !== r.st; }).length;
   console.log(`  note: ${changed} of ${R1.res.length} allocation row(s) differ from the backup's stored results; ` +
     `${bakers.length} A1 Bake-Off chooser(s) with Bake-Off per-date entries`);
+
+  // v170: removing anyone on this roster, as of the backup's day, never clears a past entry.
+  {
+    const bd = +(BK._createdAt || "").slice(0, 10).replace(/-/g, "");
+    const Wl = LVR({ dates: BK.dates, staff: JSON.parse(JSON.stringify(BK.staff)), acts: JSON.parse(JSON.stringify(BK.acts)), sa: JSON.parse(JSON.stringify(BK.sa || {})) });
+    let fut = 0, past = 0, leads = 0, badFuture = [];
+    BK.staff.forEach(s => { const p = Wl.staffRemovalPlan(s.c, bd); fut += p.future.length; past += p.past.length; leads += p.leads.length;
+      p.future.forEach(k => { const d = BK.dates[parseInt(k, 10)], q = core.parseDateDmy(d && d.full); if (!(q[0] * 10000 + q[1] * 100 + q[2] > bd)) badFuture.push(k); }); });
+    t("removal on the real roster only ever clears dates after today", badFuture.length === 0, badFuture.slice(0, 5).join(","));
+    console.log(`  note: across all ${BK.staff.length} staff — ${past} past calendar entries a v169 removal would have deleted are kept; ${fut} upcoming entries and ${leads} lead fields would be offered for clearing`);
+  }
 
   // v169 §1: the Saturday checks over the live backup, as of the day the backup was taken.
   const bday = (BK._createdAt || "").slice(0, 10).replace(/-/g, "");

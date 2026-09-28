@@ -965,7 +965,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v169';
+const CURRENT_VERSION = 'v170';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -1680,6 +1680,88 @@ function saSet(key,actName,role){
 }
 // Extract staff code from any sa key format ("di|code" or "di|code|A")
 function saCode(key){return key.split("|")[1];}
+// v170: a lead picker from the roster. The P1/P4 lead fields in the Split panel were free
+// text, which is how a surname and a leaver's code got in as leads (28 Sept). A stored code
+// that isn't on the roster stays visible and marked, rather than showing as "TBC" while the
+// data still holds it — the main Lead dropdown did exactly that, so bad codes went unseen.
+function _staffCodeSelect(value,onPick,width){
+  const cur=value||"";
+  const known=staff.some(s=>s.c===cur);
+  const sel=h("select",{style:{width:width||"75px",color:cur&&!known?"var(--red)":""},
+    title:cur&&!known?cur+" is not on the staff roster — pick someone, or TBC":"",
+    onChange:e=>onPick(e.target.value)});
+  sel.appendChild(h("option",{value:"",selected:!cur},"TBC"));
+  if(cur&&!known)sel.appendChild(h("option",{value:cur,selected:true},cur+" — not on roster"));
+  sortedStaff(staff).forEach(s=>sel.appendChild(h("option",{value:s.c,selected:s.c===cur},s.n.split(" ")[0]+" ("+s.c+")")));
+  return sel;
+}
+// v170: what removing a staff member would leave pointing at a code nobody has. Before v170,
+// removal deleted EVERY staff-calendar entry for the code — past Saturdays included, so the
+// record of what they ran went too (in the cloud as well, via lex_sa) — and left their leads
+// and additional-staff tags in place, which the Saturday checks then list as unknown codes.
+// Only dates after today are "upcoming": today's entries are kept, so a leaver removed on a
+// Saturday afternoon keeps that morning's record. A date that can't be read is kept too.
+function staffRemovalPlan(code,todayYmd){
+  const t=todayYmd||_todayYmd();
+  const plan={code,leads:[],tags:[],future:[],past:[]};
+  acts.forEach(a=>{
+    [["lead","lead"],["sessALead","P1 lead"],["sessBLead","P4 lead"]].forEach(([f,label])=>{if(a[f]===code)plan.leads.push({act:a,field:f,label});});
+    if((a.staff||[]).includes(code))plan.tags.push({act:a});
+  });
+  Object.keys(sa).forEach(k=>{
+    if(saCode(k)!==code)return;
+    const di=parseInt(k,10),d=dates[di],p=d?parseDateDmy(d.full):[9999];
+    const ymd=p[0]===9999?null:p[0]*10000+p[1]*100+p[2];
+    (ymd!==null&&ymd>t?plan.future:plan.past).push(k);
+  });
+  return plan;
+}
+// Remove from the roster; with clearLinks, also clear the leads, tags and upcoming calendar
+// entries the plan found. Past entries are never touched either way.
+function applyStaffRemoval(plan,clearLinks){
+  const i=staff.findIndex(s=>s.c===plan.code);if(i>=0)staff.splice(i,1);
+  if(!clearLinks)return;
+  plan.leads.forEach(l=>{if(l.act[l.field]===plan.code)l.act[l.field]="";});
+  plan.tags.forEach(t=>{t.act.staff=(t.act.staff||[]).filter(c=>c!==plan.code);});
+  plan.future.forEach(k=>{delete sa[k];});
+}
+function confirmStaffRemoval(s){
+  const plan=staffRemovalPlan(s.c);
+  document.querySelectorAll(".staff-remove-overlay").forEach(x=>x.remove());
+  const ov=h("div",{className:"staff-remove-overlay",style:{position:"fixed",top:"0",left:"0",right:"0",bottom:"0",zIndex:"1000",
+    background:"rgba(0,0,0,.35)",display:"flex",alignItems:"center",justifyContent:"center"}});
+  const box=h("div",{className:"card card-pad",style:{maxWidth:"520px",width:"92%",background:"var(--surface)",maxHeight:"85vh",overflow:"auto"}});
+  const esc=e=>{if(e.key==="Escape")close();};
+  function close(){ov.remove();document.removeEventListener("keydown",esc);}
+  function go(clear){
+    close();
+    applyStaffRemoval(plan,clear);
+    logAction("STAFF_REMOVED",s.c+" ("+s.n+")"+(clear?": cleared "+plan.leads.length+" lead(s), "+plan.tags.length+" tag(s), "+plan.future.length+" upcoming calendar entr"+(plan.future.length===1?"y":"ies"):": links left in place")+"; "+plan.past.length+" past entr"+(plan.past.length===1?"y":"ies")+" kept");
+    saveAll();toast(s.n+" removed");rebuildAdminPreserveScroll();
+  }
+  const links=plan.leads.length+plan.tags.length+plan.future.length;
+  const dl=di=>(dates[di]&&(dates[di].label||dates[di].full))||("date "+(di+1));
+  const list=(title,items)=>items.length?h("div",{style:{marginBottom:"8px"}},h("div",{style:{fontWeight:600,fontSize:"12px"}},title+" ("+items.length+")"),
+    h("div",{style:{fontSize:"11px",color:"var(--text2)",lineHeight:1.6,maxHeight:"110px",overflow:"auto"}},items.join(" · "))):null;
+  box.appendChild(h("div",{style:{fontWeight:700,fontSize:"14px",marginBottom:"8px"}},"Remove "+s.n+" ("+s.c+")?"));
+  if(links){
+    box.appendChild(h("div",{style:{fontSize:"12px",marginBottom:"10px",lineHeight:1.5}},"They are still down for these. Left in place, they show under Allocation Report → Before each Saturday as a code not on the roster."));
+    box.appendChild(list("Lead",plan.leads.map(l=>l.act.n+(l.field==="lead"?"":" ("+l.label+")"))));
+    box.appendChild(list("Additional staff on",plan.tags.map(t=>t.act.n)));
+    box.appendChild(list("Staff calendar, dates to come",plan.future.slice().sort((x,y)=>parseInt(x,10)-parseInt(y,10)).map(k=>dl(parseInt(k,10))+(k.split("|")[2]?" "+(k.split("|")[2]==="A"?"P1":"P4"):"")+": "+(saGet(k)||"—"))));
+  } else box.appendChild(h("div",{style:{fontSize:"12px",marginBottom:"10px"}},"They aren't a lead or additional staff on any activity, and have nothing on the staff calendar for dates to come."));
+  box.appendChild(h("div",{style:{fontSize:"11px",color:"var(--text3)",marginBottom:"12px"}},plan.past.length?plan.past.length+" staff-calendar entr"+(plan.past.length===1?"y":"ies")+" from past dates (and today) will be kept as the record.":"No past staff-calendar entries."));
+  const row=h("div",{style:{display:"flex",gap:"8px",flexWrap:"wrap"}});
+  if(links){
+    row.appendChild(h("button",{className:"btn btn-danger btn-sm",onClick:()=>go(true)},"Remove and clear these"));
+    row.appendChild(h("button",{className:"btn btn-ghost btn-sm",onClick:()=>go(false)},"Remove, leave these"));
+  } else row.appendChild(h("button",{className:"btn btn-danger btn-sm",onClick:()=>go(false)},"Remove"));
+  row.appendChild(h("button",{className:"btn btn-ghost btn-sm",onClick:close},"Cancel"));
+  box.appendChild(row);
+  document.addEventListener("keydown",esc);
+  ov.addEventListener("click",e=>{if(e.target===ov)close();});
+  ov.appendChild(box);document.body.appendChild(ov);
+}
 // Rename a staff code everywhere: sa map, activity lead/staff/sessALead/sessBLead, priorYTD
 function renameStaffCode(oldCode, newCode){
   if(!oldCode||!newCode||oldCode===newCode)return 0;
@@ -13208,9 +13290,8 @@ function renderAdminActs(el){
     tr.appendChild(h("td",null,mk("yg","55px")));
     tr.appendChild(h("td",null,mk("cap","60px","number")));
     // Lead dropdown
-    const ls=h("select",{"data-fkey":a.id+"|lead",style:{width:"75px"},onChange:e=>{a.lead=e.target.value;syncRosterToCalendar();rebuildAdminPreserveScroll();}});
-    ls.appendChild(h("option",{value:""},"TBC"));
-    sortedStaff(staff).forEach(s=>{const o=h("option",{value:s.c},s.n.split(" ")[0]+" ("+s.c+")");if(a.lead===s.c)o.selected=true;ls.appendChild(o);});
+    const ls=_staffCodeSelect(a.lead,v=>{a.lead=v;syncRosterToCalendar();rebuildAdminPreserveScroll();},"75px"); // v170
+    ls.setAttribute("data-fkey",a.id+"|lead");
     // Additional staff — inline multi-tag picker
     // v168: lead, additional-staff tags and "+ add" sit on one line (they were stacked four deep).
     const rosterCell=h("td",null);
@@ -13306,16 +13387,23 @@ function renderAdminActs(el){
             }});
           row.appendChild(inp);return row;
         };
+        // v170: P1/P4 lead from the roster (these were free text).
+        const mkLeadSplit=(label,field)=>{
+          const row=h("div",{style:{marginBottom:"8px"}});
+          row.appendChild(h("label",{className:"field-label"},label));
+          row.appendChild(_staffCodeSelect(a[field],v=>{a[field]=v;saveAll();_updSplitSummary();},"100%"));
+          return row;
+        };
         const grid=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}});
         const colA=h("div",null);colA.appendChild(h("div",{style:{fontWeight:600,fontSize:"11px",color:"var(--accent)",marginBottom:"6px"}},"P1 (9am)"));
         colA.appendChild(mkSplit("Name","sessA","e.g. Pilates"));
         colA.appendChild(mkSplit("Venue","sessAVenue","e.g. Library"));
-        colA.appendChild(mkSplit("Lead code","sessALead","e.g. FD"));
+        colA.appendChild(mkLeadSplit("Lead","sessALead"));
         colA.appendChild(mkSplit("Time","sessATime","09:15–10:45"));
         const colB=h("div",null);colB.appendChild(h("div",{style:{fontWeight:600,fontSize:"11px",color:"var(--purple)",marginBottom:"6px"}},"P4 (11am)"));
         colB.appendChild(mkSplit("Name","sessB","e.g. Embroidery"));
         colB.appendChild(mkSplit("Venue","sessBVenue","e.g. DT01"));
-        colB.appendChild(mkSplit("Lead code","sessBLead","e.g. JLB"));
+        colB.appendChild(mkLeadSplit("Lead","sessBLead"));
         colB.appendChild(mkSplit("Time","sessBTime","11:00–12:30"));
         grid.appendChild(colA);grid.appendChild(colB);panel.appendChild(grid);
         panel.appendChild(h("div",{style:{fontSize:"9px",fontWeight:700,color:"var(--text3)",margin:"10px 0 0",letterSpacing:"0.4px"}},"CURRENT CONFIG (auto-saved)"));
@@ -13440,12 +13528,7 @@ function renderAdminStaff(el){
       h("td",null,h("input",{value:s.n,style:{width:"160px"},onInput:e=>{s.n=e.target.value;saveAll();}})),
       h("td",null,h("input",{value:s.r||"",style:{width:"90px"},onInput:e=>{s.r=e.target.value;saveAll();}})),
       h("td",null,h("input",{value:s.email||"",placeholder:"surname@clayesmore.com",style:{width:"200px",fontSize:"11px"},onInput:e=>{s.email=e.target.value.trim();saveAll();}})),
-      h("td",null,(()=>{const sc=s.c,sn=s.n;return h("button",{className:"btn btn-danger btn-xs",onClick:()=>{
-        if(!confirm("Remove "+sn+" from staff list?"))return;
-        staff.splice(staff.indexOf(s),1);
-        Object.keys(sa).forEach(k=>{if(saCode(k)===sc)delete sa[k];});
-        saveAll();toast(sn+" removed");rebuildAdminPreserveScroll();
-      }},"✕");})())
+      h("td",null,h("button",{className:"btn btn-danger btn-xs",onClick:()=>confirmStaffRemoval(s)},"✕")) // v170
     ));
   });
   st2.appendChild(sb);sw.appendChild(st2);el.appendChild(sw);
