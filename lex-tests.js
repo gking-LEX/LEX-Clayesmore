@@ -1203,6 +1203,405 @@ S("v168 — Activities editor fits the screen");
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// v169 — P0 (runs at the end, before the summary, because it is async: see p0Tests).
+// A stand-in for Supabase's REST interface (PostgREST) over lex_data. It honours the parts the
+// app depends on: eq/in filters, conditional PATCH, insert-or-ignore, upsert, return=representation.
+// Like Postgres it rewrites timestamps into its own format ("…+00:00"), so the app cannot pass
+// only by getting back exactly the stamp it sent.
+var mkServer = (seed) => {
+  const rows = {}, log = [];
+  let clock = Date.parse("2026-09-28T08:00:00Z");
+  // Postgres keeps microseconds: "…12.345678+00:00". Keep up to six fractional digits.
+  const norm = s => { const m = /^(.*T\d\d:\d\d:\d\d)(\.\d+)?Z$/.exec(s || "");
+    if (!m) return new Date(clock += 1000).toISOString().replace("Z", "+00:00");
+    return m[1] + ((m[2] || ".") + "000000").slice(0, 7) + "+00:00"; };
+  Object.entries(seed || {}).forEach(([k, v]) => { rows["lex12-" + k] = { value: JSON.stringify(v), updated_at: norm(new Date(clock += 1000).toISOString()) }; });
+  const resp = (status, body) => ({ ok: status < 300, status, json: async () => body, text: async () => JSON.stringify(body), headers: { get: () => null } });
+  const fetch = async (url, opts) => {
+    opts = opts || {};
+    const u = new URL(url), q = u.searchParams, method = opts.method || "GET";
+    const prefer = ((opts.headers || {}).Prefer || "");
+    const eq = f => { const v = q.get(f); return v && v.startsWith("eq.") ? v.slice(3) : null; };
+    log.push(method + " " + (eq("key") || q.get("key") || (opts.body ? JSON.parse(opts.body).key : "")));
+    if (method === "GET") {
+      const inq = q.get("key");
+      if (inq && inq.startsWith("in.(")) {
+        const keys = inq.slice(4, -1).split(",");
+        return resp(200, keys.filter(k => rows[k]).map(k => ({ key: k, updated_at: rows[k].updated_at })));
+      }
+      const r = rows[eq("key")];
+      return resp(200, r ? [{ value: r.value, updated_at: r.updated_at }] : []);
+    }
+    const body = JSON.parse(opts.body);
+    if (method === "PATCH") {
+      const k = eq("key"), want = eq("updated_at"), r = rows[k];
+      if (!r || (want !== null && r.updated_at !== want)) return resp(200, []);   // 0 rows: someone else wrote first
+      r.value = body.value; r.updated_at = norm(body.updated_at);
+      return resp(200, /return=representation/.test(prefer) ? [{ key: k, ...r }] : []);
+    }
+    if (method === "POST") {
+      if (rows[body.key] && /ignore-duplicates/.test(prefer)) return resp(201, []);
+      rows[body.key] = { value: body.value, updated_at: norm(body.updated_at) };
+      return resp(201, /return=representation/.test(prefer) ? [{ key: body.key, ...rows[body.key] }] : []);
+    }
+    return resp(400, {});
+  };
+  return { fetch, rows, log, get: k => rows["lex12-" + k] ? JSON.parse(rows["lex12-" + k].value) : undefined,
+    bump: () => { clock += 5000; } };
+};
+// One open copy of LEX: the shipped sync functions over its own in-memory state. `ls` is the
+// browser's local storage — two tabs of one browser share it.
+var P0_SRC = [
+  grab("function normEmail(e){", "\r\n", "normEmail"),
+  grab("function _isEmptyValue(v){", "\r\n}", "_isEmptyValue"),
+  grab("function _stateForKey(k){", "\r\n}", "_stateForKey"),
+  grab("const _ALL_KEYS=[", "];", "_ALL_KEYS"),
+  grab("async function supaSet(key,value){", "\r\n}", "supaSet"),
+  grab("async function supaGet(key){", "\r\n}", "supaGet"),
+  grab("const _BLOB_KEYS=[", "];", "_BLOB_KEYS"),
+  grab("const _BLOB_LABEL={", "};", "_BLOB_LABEL"),
+  grab("let _blobStamps={};", "let _blobConflictLog=[];", "v169 sync state"),
+  grab("function _loadBlobMeta(){", "\r\n}", "_loadBlobMeta"),
+  grab("function _saveBlobMeta(){", "\r\n}", "_saveBlobMeta"),
+  grab("function _strHash(s){", "\r\n", "_strHash"),
+  grab("function _hasStamp(k){", "\r\n", "_hasStamp"),
+  grab("function _newStamp(){", "\r\n", "_newStamp"),
+  grab("async function supaGetWithStamp(key){", "\r\n}", "supaGetWithStamp"),
+  grab("async function supaSetIfUnchanged(key,value,expect){", "\r\n}", "supaSetIfUnchanged"),
+  grab("async function blobStampSignature(){", "\r\n}", "blobStampSignature"),
+  grab("function _setStateForKey(k,v){", "\r\n}", "_setStateForKey"),
+  grab("function _blobTypeOk(k,v){", "\r\n}", "_blobTypeOk"),
+  grab("function _blobIdFn(k){", "\r\n}", "_blobIdFn"),
+  grab("const _ABSENT={};", "\r\n", "_ABSENT"),
+  grab("function _canonJson(v){", "\r\n}", "_canonJson"),
+  grab("function _blobMerge(base,local,cloud,idFn){", "\r\n}", "_blobMerge"),
+  grab("function _describeBlobPath(k,path){", "\r\n}", "_describeBlobPath"),
+  grab("function _noteBlobConflicts(k,list){", "\r\n}", "_noteBlobConflicts"),
+  grab("function _showBlobConflicts(){", "\r\n}", "_showBlobConflicts"),
+  grab("function _applyCloudBlob(k,got,seq0){", "\r\n}", "_applyCloudBlob"),
+  grab("async function _writeBlobKey(k){", "\r\n}", "_writeBlobKey"),
+  grab("async function _pushDirtyBlobs(){", "\r\n}", "_pushDirtyBlobs"),
+  grab("function markBlobsForOverwrite(keys){", "\r\n}", "markBlobsForOverwrite"),
+  grab("function _primeBlobBaseline(){", "\r\n}", "_primeBlobBaseline"),
+  grab("function _noteDirtyBlobsNow(){", "\r\n}", "_noteDirtyBlobsNow"),
+  grab("function _refreshFingerprintsAfterLoad(){", "\r\n}", "_refreshFingerprintsAfterLoad"),
+  grab("function saveSupa(){", "\r\n}", "saveSupa"),
+  grab("function _flushOnUnload(){", "\r\n}", "_flushOnUnload")
+].join("\n");
+var mkClient = (server, ls, opts) => new Function("SERVER", "LS", "OPTS", `
+  let acts=[],staff=[],pupils=[],dates=[],priorYTD={},allocOverrides={},allocHistory=[],formData=[],allocRes=[],venues=[],
+      consentMap={},savedSubGroups={},notepadText="",designations=[],sa={},overviewData={},attendance={};
+  let _lastSyncedFingerprints={},_loadedNonEmpty={},_saveGuardBlocked={},syncStatus="online",lastSyncTime=null,
+      _hasPendingSupaWrite=false,_supaDbc=null,_supaWriteInFlight=false,_saveRetryCount=0,_saveLastError=null,_autosnapDirty=false;
+  const supaClient={url:"https://db.test",key:"k"};const fetch=SERVER.fetch;const localStorage=LS;
+  const conflicts=()=>_blobConflictLog;
+  function isStaffView(){return !!OPTS.staff;} function isPublicTimetable(){return false;}
+  function updateSyncBadge(){} async function saSyncPerRow(){return true;} async function _reconcileIfStale(){}
+  function _markSupaWrite(){} function _announceSaved(){} function invalidateCaches(){} function saveLocal(){}
+  function _onAutoUpdateView(){return false;} function _safeAutoRerender(){return false;} function _scheduleSilentRerender(){}
+  function _showRemoteUpdateBanner(){} function logAction(){} function _updateSaveGuardBanner(){} function toast(){} function autoSnapshot(){}
+  const console={error(){},warn(){},log(){}};
+  const Math=Object.create(globalThis.Math);Math.random=()=>((SERVER.rnd=(SERVER.rnd||0)+1)%1000)/1000;
+  ${P0_SRC}
+  // What loadFromSupabase does for the blob keys: read each with its version, apply, re-fingerprint.
+  // during: run between the reads and applying them, as a save that lands mid-load would.
+  async function load(during){
+    const seq0={};_BLOB_KEYS.forEach(k=>{seq0[k]=_blobWriteSeq[k]||0;});
+    const got={};for(const k of _BLOB_KEYS)got[k]=await supaGetWithStamp("lex12-"+k);
+    if(during)await during();
+    _blobTakenClean=new Set();_BLOB_KEYS.forEach(k=>_applyCloudBlob(k,got[k],seq0[k]));
+    _refreshFingerprintsAfterLoad();_saveBlobMeta();
+  }
+  // What a reload does before the cloud answers: local storage is the baseline.
+  function loadLocalOnly(values){Object.entries(values).forEach(([k,v])=>_setStateForKey(k,JSON.parse(JSON.stringify(v))));_primeBlobBaseline();}
+  return {load,loadLocalOnly,push:_pushDirtyBlobs,saveSupa,flush:_flushOnUnload,noteDirty:_noteDirtyBlobsNow,
+    markOverwrite:markBlobsForOverwrite,merge:_blobMerge,ABSENT:_ABSENT,conflicts,
+    get acts(){return acts;},set acts(v){acts=v;},get ovr(){return allocOverrides;},set ovr(v){allocOverrides=v;},
+    get notepad(){return notepadText;},set notepad(v){notepadText=v;},
+    setPending(v){_hasPendingSupaWrite=v;},stamps:()=>_blobStamps,newStamp:_newStamp};`)(server, ls, opts || {});
+var mkLS = () => { const m = {}; return { getItem: k => (k in m ? m[k] : null), setItem: (k, v) => { m[k] = String(v); }, removeItem: k => { delete m[k]; }, _m: m }; };
+var ACTS0 = [{ id: "A1", n: "Golf", cap: 14, v: "Range", di: [0, 1], staff: ["JAR"] }, { id: "A2", n: "Chess", cap: 10, v: "Library", di: [0], staff: [] },
+             { id: "A3", n: "Kayaking", cap: 8, v: "River", di: [1], staff: [] }];
+var clone = x => JSON.parse(JSON.stringify(x));
+async function p0Tests() {
+  S("v169 — P0: a stale copy never overwrites newer data");
+  const act = (c, id) => c.acts.find(a => a.id === id);
+  const sAct = (srv, id) => (srv.get("acts") || []).find(a => a.id === id);
+  // 1. Different items / fields: both changes survive.
+  {
+    const srv = mkServer({ acts: ACTS0 });
+    const A = mkClient(srv, mkLS()), B = mkClient(srv, mkLS());
+    await A.load(); await B.load();                       // B is the morning tab
+    act(A, "A1").cap = 24; await A.push();
+    act(B, "A2").cap = 12; act(B, "A1").v = "Course"; await B.push();
+    t("two copies editing different activities: the cloud has both changes", sAct(srv, "A1").cap === 24 && sAct(srv, "A2").cap === 12);
+    t("…and a different field of the same activity merges too", sAct(srv, "A1").v === "Course");
+    t("…with nothing reported as refused", B.conflicts().length === 0);
+    t("…and the stale copy now shows the other copy's change", act(B, "A1").cap === 24);
+  }
+  // 2. Same field: the stale copy is refused, reloads, and says so.
+  {
+    const srv = mkServer({ acts: ACTS0 });
+    const A = mkClient(srv, mkLS()), B = mkClient(srv, mkLS());
+    await A.load(); await B.load();
+    act(A, "A1").cap = 24; await A.push();
+    act(B, "A1").cap = 20; await B.push();
+    t("same field: the newer value is kept", sAct(srv, "A1").cap === 24);
+    t("same field: the stale copy reloads it", act(B, "A1").cap === 24);
+    t("same field: the refusal is reported, naming what", B.conflicts().length === 1 && /Activities › Golf › cap/.test(B.conflicts()[0].what), JSON.stringify(B.conflicts().map(c => c.what)));
+    t("same field: the refused value is kept for the user to copy", B.conflicts()[0].mine === 20);
+  }
+  // 3. A stale copy that resumes and saves nothing writes nothing.
+  {
+    const srv = mkServer({ acts: ACTS0, notepad: "morning" });
+    const A = mkClient(srv, mkLS()), B = mkClient(srv, mkLS());
+    await A.load(); await B.load();
+    act(A, "A2").n = "Chess Club"; await A.push();
+    const before = srv.log.length;
+    await B.push();
+    t("a copy with no edits writes nothing", srv.log.slice(before).every(l => l.startsWith("GET")), srv.log.slice(before).join(";"));
+    await B.load();
+    t("…and on waking takes the newer data", act(B, "A2").n === "Chess Club");
+    // The same after a reload from local storage only (the old "first sync" pushed everything).
+    const C = mkClient(srv, mkLS()); C.loadLocalOnly({ acts: ACTS0, notepad: "morning" });
+    const b2 = srv.log.length; await C.push();
+    t("a copy reloaded from local storage pushes nothing it didn't edit", srv.log.slice(b2).every(l => l.startsWith("GET")) && sAct(srv, "A2").n === "Chess Club");
+    await C.load();
+    t("…and then shows the cloud's version", act(C, "A2").n === "Chess Club");
+  }
+  // A load whose reads were taken before this tab's own save landed must not put the old
+  // version back over it (the read is older than the write).
+  {
+    const srv = mkServer({ acts: ACTS0, notepad: "morning" });
+    const A = mkClient(srv, mkLS()); await A.load();
+    A.notepad = "afternoon";
+    await A.load(async () => { await A.push(); });
+    t("a load that crossed this tab's own save does not undo it", A.notepad === "afternoon" && srv.get("notepad") === "afternoon", A.notepad);
+    A.notepad = "evening"; const b = srv.log.length; await A.push();
+    t("…and the next save goes straight through, with no false conflict", srv.get("notepad") === "evening"
+      && srv.log.slice(b).filter(l => l.startsWith("PATCH")).length === 1 && !A.conflicts().length, srv.log.slice(b).join(";"));
+  }
+  // 4. The 28 Sept shape: a deleted activity must not come back.
+  {
+    const srv = mkServer({ acts: ACTS0 });
+    const A = mkClient(srv, mkLS()), B = mkClient(srv, mkLS());
+    await A.load(); await B.load();
+    A.acts = A.acts.filter(a => a.id !== "A3"); await A.push();
+    act(B, "A1").n = "Golf (Crane)"; await B.push();
+    t("an activity deleted on one copy is not resurrected by a stale one", !sAct(srv, "A3") && sAct(srv, "A1").n === "Golf (Crane)");
+    const C = mkClient(srv, mkLS()); await C.load();
+    act(A, "A2").cap = 11; await A.push();                      // A moves on…
+    act(C, "A3") || (C.acts.push({ id: "A9", n: "New one", cap: 5, v: "", di: [], staff: [] }));
+    await C.push();
+    t("an activity added on one copy survives another copy's edit", !!sAct(srv, "A9") && sAct(srv, "A2").cap === 11);
+    // Deleted on one copy, edited on the other: the deletion stands and the edit is reported.
+    const D = mkClient(srv, mkLS()), E = mkClient(srv, mkLS()); await D.load(); await E.load();
+    D.acts = D.acts.filter(a => a.id !== "A2"); await D.push();
+    act(E, "A2").cap = 99; await E.push();
+    t("edit to an activity deleted elsewhere: deletion stands, edit reported", !sAct(srv, "A2") && E.conflicts().length === 1);
+  }
+  // 5. Half-term overrides merge per pupil (and the v167 reasons with them).
+  {
+    const O0 = { a1: {}, a2: { "p1@c.com": "Golf", "p3@c.com": "Polo" }, _reason: { a2: { "p1@c.com": { to: "Golf", why: "missed" } } } };
+    const srv = mkServer({ allocoverrides: O0 });
+    const A = mkClient(srv, mkLS()), B = mkClient(srv, mkLS());
+    await A.load(); await B.load();
+    A.ovr.a2["p2@c.com"] = "Chess"; A.ovr._reason.a2["p2@c.com"] = { to: "Chess", why: "changed" }; await A.push();
+    delete B.ovr.a2["p1@c.com"]; delete B.ovr._reason.a2["p1@c.com"]; await B.push();   // a Clear on the stale copy
+    const o = srv.get("allocoverrides");
+    t("overrides: one copy's new override and the other's Clear both stand", o.a2["p2@c.com"] === "Chess" && !("p1@c.com" in o.a2) && o.a2["p3@c.com"] === "Polo");
+    t("overrides: the reasons follow", o._reason.a2["p2@c.com"].why === "changed" && !o._reason.a2["p1@c.com"]);
+    // The reverse order — the shape suspected behind "Clear didn't stick": the Clear lands first,
+    // then a stale copy that still holds the override edits something else.
+    const srv2 = mkServer({ allocoverrides: O0 });
+    const X = mkClient(srv2, mkLS()), Y = mkClient(srv2, mkLS()); await X.load(); await Y.load();
+    delete X.ovr.a2["p1@c.com"]; await X.push();
+    Y.ovr.a2["p4@c.com"] = "Karting"; await Y.push();
+    t("a Clear is not undone by a stale copy saving something else", !("p1@c.com" in srv2.get("allocoverrides").a2) && srv2.get("allocoverrides").a2["p4@c.com"] === "Karting");
+  }
+  // 6. Closing a stale tab mid-save.
+  {
+    const srv = mkServer({ acts: ACTS0 });
+    const A = mkClient(srv, mkLS()), B = mkClient(srv, mkLS());
+    await A.load(); await B.load();
+    act(A, "A1").cap = 24; await A.push();
+    act(B, "A1").cap = 20; B.setPending(true); B.flush();
+    await new Promise(r => setTimeout(r, 20));
+    t("closing a stale tab mid-save does not overwrite newer data", sAct(srv, "A1").cap === 24);
+    const C = mkClient(srv, mkLS(), { staff: true }); await C.load(); act(C, "A2").cap = 1; C.setPending(true); C.flush();
+    await new Promise(r => setTimeout(r, 20));
+    t("a staff-portal tab never writes blobs as it closes", sAct(srv, "A2").cap === 10);
+  }
+  // 7. Unsaved edits left by a closed tab are finished on reload — only if still safe.
+  {
+    const srv = mkServer({ notepad: "v1" });
+    const ls = mkLS();
+    const A = mkClient(srv, ls); await A.load(); A.notepad = "v1 plus my note"; A.noteDirty();   // tab closes before the write
+    const A2 = mkClient(srv, ls); A2.loadLocalOnly({ notepad: "v1 plus my note" }); await A2.load(); await A2.push();
+    t("an unsaved edit is finished on reload when the cloud hasn't moved", srv.get("notepad") === "v1 plus my note");
+    const srv2 = mkServer({ notepad: "v1" }); const ls2 = mkLS();
+    const P = mkClient(srv2, ls2); await P.load(); P.notepad = "mine"; P.noteDirty();
+    const Q = mkClient(srv2, mkLS()); await Q.load(); Q.notepad = "someone else's"; await Q.push();
+    const P2 = mkClient(srv2, ls2); P2.loadLocalOnly({ notepad: "mine" }); await P2.load(); await P2.push();
+    t("…but not when another copy has changed it since: that is kept and reported", srv2.get("notepad") === "someone else's" && P2.conflicts().length === 1);
+    // Local storage replaced by another (stale) tab of the same browser: the hash no longer matches.
+    const srv3 = mkServer({ notepad: "v1" }); const ls3 = mkLS();
+    const R = mkClient(srv3, ls3); await R.load(); R.notepad = "fresh edit"; R.noteDirty();
+    const R2 = mkClient(srv3, ls3); R2.loadLocalOnly({ notepad: "stale tab's copy" }); await R2.load(); await R2.push();
+    t("…nor when another tab has since replaced this browser's local copy", srv3.get("notepad") === "v1");
+  }
+  // 8. A confirmed restore still overwrites — knowingly.
+  {
+    const srv = mkServer({ acts: ACTS0 });
+    const A = mkClient(srv, mkLS()), B = mkClient(srv, mkLS()); await A.load(); await B.load();
+    act(A, "A1").cap = 24; await A.push();
+    B.acts = clone(ACTS0).map(a => ({ ...a, cap: 1 })); B.markOverwrite(); await B.push();
+    t("a confirmed restore replaces the newer version", sAct(srv, "A1").cap === 1 && sAct(srv, "A2").cap === 1 && B.conflicts().length === 0);
+  }
+  // 9. saveSupa itself routes through the conditional writer.
+  {
+    const srv = mkServer({ acts: ACTS0 });
+    const A = mkClient(srv, mkLS()), B = mkClient(srv, mkLS()); await A.load(); await B.load();
+    act(A, "A1").cap = 24; A.saveSupa(); await new Promise(r => setTimeout(r, 250));
+    act(B, "A2").cap = 12; B.saveSupa(); await new Promise(r => setTimeout(r, 250));
+    t("saveSupa (the real debounced save) keeps both copies' changes", sAct(srv, "A1").cap === 24 && sAct(srv, "A2").cap === 12);
+  }
+  // 10. The merge itself.
+  {
+    const A = mkClient(mkServer({}), mkLS());
+    let r = A.merge({ di: [0, 1] }, { di: [0, 1, 2] }, { di: [1] }, null);
+    t("merge: date lists merge as sets (added here, removed there)", JSON.stringify(r.value.di) === "[1,2]" && !r.conflicts.length);
+    r = A.merge({ x: 1, y: 1 }, { y: 1, x: 1, z: 2 }, { x: 1, y: 3 }, null);
+    t("merge: key order is not a change", r.value.y === 3 && r.value.z === 2 && !r.conflicts.length);
+    r = A.merge("a", "b", "c", null);
+    t("merge: a real clash keeps the cloud's value and reports it", r.value === "c" && r.conflicts.length === 1);
+  }
+  {
+    const A = mkClient(mkServer({}), mkLS());
+    const s1 = A.newStamp(), s2 = A.newStamp();
+    t("version stamps carry microseconds, so two saves in one millisecond still differ", /\.\d{6}Z$/.test(s1) && s1 !== s2, s1 + " " + s2);
+  }
+  t("loadFromSupabase applies every managed key through _applyCloudBlob", has("_BLOB_KEYS.forEach(k=>_applyCloudBlob(k,_gotBlobs[k],_seq0[k]));"));
+  t("the 'local storage is newer, push everything' step is gone", !has("_lastSyncedFingerprints={};  // force full write"));
+  t("no first-sync push-all anywhere", !has("isFirstSync"));
+  t("a tab re-reads before edits after being hidden, cached or asleep",
+    has('_refreshBeforeEdit("visible after "') && has('_refreshBeforeEdit("restored from cache")') && has('_refreshBeforeEdit("first touch after sleep")'));
+  t("the Cloud Sync diagnostic tests the version check on the real database", has("Test 3b: version check"));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+S("v169 — §1: checks before each Saturday");
+var CHK_SRC = [
+  grab("function normEmail(", "\r\n", "normEmail"),
+  grab("function parseDateDmy(", "\r\n}", "parseDateDmy"),
+  grab("function _rebuildCaches(){", "\r\n}", "_rebuildCaches"),
+  grab("function _ensureCaches(){", "\r\n", "_ensureCaches"),
+  grab("function findActByName_exact(", "\r\n}", "findActByName_exact"),
+  grab("function sortedDateIndices(){", "\r\n}", "sortedDateIndices"),
+  grab("function _todayYmd(", "\r\n", "_todayYmd"),
+  grab("function _diHasHappened(", "\r\n}", "_diHasHappened"),
+  grab("function _isOutOfSchool(", "\r\n", "_isOutOfSchool"),
+  grab("function getAllDesignations(){", "\r\n}", "getAllDesignations"),
+  grab("function buildEngMap(){", "\r\n}", "buildEngMap"),
+  grab("function getEffectiveAllocOnDate(", "\r\n}", "getEffectiveAllocOnDate"),
+  grab("function saKeysForDate(", "\r\n}", "saKeysForDate"),
+  grab("function saGet(", "\r\n", "saGet"),
+  grab("function saCode(", "\r\n", "saCode"),
+  grab("function isSplitAct(", "\r\n", "isSplitAct"),
+  grab("const SPECIAL_ALLOCS=", "\r\n", "SPECIAL_ALLOCS"),
+  grab("const STAFF_DESIGNATIONS=[", "\r\n];", "STAFF_DESIGNATIONS"),
+  grab("function normaliseActs(){", "\r\n}", "normaliseActs"),
+  grab("function allocUpcomingChecks(", "\r\n}", "allocUpcomingChecks")
+].join("\n");
+var CHK = w => new Function("W", `
+  let acts=W.acts,pupils=W.pupils||[],dates=W.dates,formData=W.fd||[],allocOverrides=W.ao||{},
+      allocDateOverrides=W.ado||{},allocRes=W.res||[],staff=W.staff||[],sa=W.sa||{};
+  let _pupilCache=null,_actCache=null,_engMapCache=null;
+  ${CHK_SRC}
+  let designations=W.designations||STAFF_DESIGNATIONS.map(d=>({n:d.n,counted:d.counted!==false}));
+  normaliseActs();   // as the app does on load: unset session leads take the lead
+  return allocUpcomingChecks(W.today);`)(w);
+{
+  // Invented names throughout — this file is in a public repository.
+  const dates = [{ full: "19/09/2026", half: "A1" }, { full: "03/10/2026", half: "A1" }, { full: "10/10/2026", half: "A1" }];
+  const acts = [
+    { n: "Kayaking", di: [0, 1, 2], sess: "A+B", sessA: "Kayaking", sessB: "Kayaking", cap: 1, lead: "ABC", staff: [] },
+    { n: "Knit then Yoga", di: [1, 2], sess: "A+B", sessA: "Knitting", sessB: "Yoga", cap: 10, lead: "XYZ", sessALead: "XYZ", sessBLead: "Zed", staff: ["abc"] },
+    { n: "Stretch then Self Defence", di: [1], sess: "A+B", sessA: "Stretch", sessB: "Self-Defence", cap: 10 },
+    { n: "Chess then Self Defence", di: [1], sess: "A+B", sessA: "Chess", sessB: "Self Defence", cap: 10 },
+    // A P1-only activity whose session name differs from its own, as Pre-season Hockey does.
+    { n: "Hill Walk", di: [1, 2], sess: "A", sessA: "Rambling", sessB: "Rambling", cap: 10, lead: "ZZ" },
+    { n: "Pottery", di: [1], sess: "A+B", sessA: "Pottery", sessB: "Pottery", cap: 10 },
+    { n: "Orienteering", di: [0], sess: "A+B", sessA: "Orienteering", sessB: "Orienteering", cap: 10, lead: "OLD" }
+  ];
+  const staff = ["ABC", "XYZ", "MNO", "QRS", "TUV"].map(c => ({ c }));
+  const res = [["p1", "Kayaking"], ["p2", "Kayaking"], ["p3", "Kayaking"], ["p4", "Knit then Yoga"], ["p5", "Hill Walk"],
+               ["p6", "Stretch then Self Defence"], ["p7", "Chess then Self Defence"]]
+    .map(([p, a]) => ({ email: p + "@x.com", half: "A1", alloc: a, st: "1ST" }));
+  const pupils = res.map(r => ({ email: r.email }));
+  const ado = {
+    "1|p1@x.com": "Orienteering",     // exists, but doesn't run on 03/10
+    "2|p2@x.com": "Ghost Club",       // no such activity
+    "1|p3@x.com": "Out of school",    // not an activity: ignored
+    "0|p4@x.com": "Ghost Club",       // past date: ignored
+    "1|p9@x.com": "Kayaking"          // a response with no roster or engine row still counts
+  };
+  const sa = {
+    "1|ABC": { act: "Kayaking" }, "2|ABC": { act: "Kayaking" },
+    "1|XYZ|A": { act: "Knitting" },                 // nobody on Yoga that date
+    "2|XYZ": { act: "Knit then Yoga" },             // the whole activity covers both sessions
+    "1|QRS|A": { act: "Rambling" },                 // staffed by its session name
+    "1|MNO|B": { act: "Rambling" },                 // but it doesn't run in P4
+    "2|QRS": { act: "Old Club" },                   // a name no activity uses
+    "2|MNO": { act: "SLT Duty" },                   // a staff designation, not an activity
+    "1|TUV": { act: "Pottery" },                    // runs, but nobody is on it
+    "1|NEW": { act: "Kayaking" }, "2|NEW": { act: "Kayaking" }   // a code not on the roster, on two dates: one line
+  };
+  const W = { dates, acts, staff, res, pupils, ado, sa, fd: [{ email: "p9@x.com" }], today: 20260928 };
+  const r = CHK(W);
+  const find = (l, f) => l.filter(x => Object.keys(f).every(k => JSON.stringify(x[k]) === JSON.stringify(f[k])));
+  t("a per-date entry to an activity not running that date is found", find(r.missingAct, { di: 1, email: "p1@x.com", value: "Orienteering" }).length === 1);
+  t("and says why", /doesn't run/.test(find(r.missingAct, { value: "Orienteering" })[0]?.why || ""));
+  t("a per-date entry to a name no activity has is found", find(r.missingAct, { di: 2, value: "Ghost Club" }).length === 1
+    && /no activity/.test(find(r.missingAct, { di: 2 })[0]?.why || ""));
+  t("'Out of school' is not reported as a missing activity", !find(r.missingAct, { value: "Out of school" }).length);
+  t("past dates are left alone", !r.missingAct.some(x => x.di === 0) && !r.idleStaff.some(x => x.di === 0) && !r.unstaffed.some(x => x.di === 0));
+  t("exactly those two per-date problems", r.missingAct.length === 2, JSON.stringify(r.missingAct));
+  t("a split session with pupils and no staff is found", find(r.unstaffed, { di: 1, sess: "B", name: "Yoga", pupils: 1 }).length === 1);
+  t("the staffed session of it is not", !find(r.unstaffed, { di: 1, sess: "A", name: "Knitting" }).length);
+  t("staff on the whole activity cover both its sessions", !find(r.unstaffed, { di: 2, name: "Yoga" }).length && !find(r.unstaffed, { di: 2, name: "Knitting" }).length);
+  t("a session staffed under its session name counts as staffed", !r.unstaffed.some(x => x.di === 1 && x.acts.includes("Hill Walk")), JSON.stringify(r.unstaffed));
+  t("the same activity unstaffed on another date is found", find(r.unstaffed, { di: 2, sess: "A", name: "Rambling", acts: ["Hill Walk"] }).length === 1);
+  t("an activity with no pupils is not reported unstaffed", !r.unstaffed.some(x => x.name === "Pottery"));
+  t("an unstaffed component names the activity it comes from", find(r.unstaffed, { di: 1, sess: "B", name: "Self Defence", acts: ["Chess then Self Defence"] }).length === 1);
+  t("staff on a P1-only activity in P4 are flagged, saying it doesn't run then",
+    /doesn't run in P4/.test(find(r.idleStaff, { di: 1, code: "MNO", name: "Rambling" })[0]?.why || ""));
+  t("staff on a name no activity uses are flagged", /no activity/.test(find(r.idleStaff, { di: 2, code: "QRS", name: "Old Club" })[0]?.why || ""));
+  t("staff on a running activity with nobody on it are flagged", /no pupils/.test(find(r.idleStaff, { di: 1, code: "TUV", name: "Pottery" })[0]?.why || ""));
+  t("staff designations (SLT Duty) are not flagged", !r.idleStaff.some(x => x.name === "SLT Duty"));
+  t("staff on a session name that runs, with pupils, are not flagged", !find(r.idleStaff, { di: 1, code: "QRS" }).length);
+  t("'Self Defence' and 'Self-Defence' in one session are reported as near-duplicates",
+    find(r.nearDup, { di: 1, sess: "B" }).length === 1 && find(r.nearDup, { di: 1, sess: "B" })[0].names.sort().join("|") === "Self Defence|Self-Defence");
+  t("and nowhere else", r.nearDup.length === 1, JSON.stringify(r.nearDup));
+  t("a P4 lead code not on the roster is found", find(r.badCodes, { act: "Knit then Yoga", field: "P4 lead", code: "Zed" }).length === 1);
+  t("a code differing only in capitals suggests the roster's spelling", find(r.badCodes, { act: "Knit then Yoga", code: "abc" })[0]?.suggest === "ABC");
+  t("a staff-calendar code not on the roster is found, with its dates", find(r.badCodes, { code: "NEW", field: "staff calendar", dis: [1, 2] }).length === 1,
+    JSON.stringify(find(r.badCodes, { code: "NEW" })));
+  t("one bad lead is one line, naming every field it fills", find(r.badCodes, { act: "Hill Walk", code: "ZZ" }).length === 1
+    && find(r.badCodes, { act: "Hill Walk", code: "ZZ" })[0].field === "lead, P1 lead, P4 lead", JSON.stringify(find(r.badCodes, { act: "Hill Walk" })));
+  t("codes on activities with no date to come are left alone", !r.badCodes.some(x => x.code === "OLD"));
+  t("over capacity counts per-date entries and responses, as Results by Date does",
+    find(r.overCap, { di: 1, act: "Kayaking", n: 2 }).length === 1 && find(r.overCap, { di: 2, act: "Kayaking", n: 2 }).length === 1, JSON.stringify(r.overCap));
+  t("and nothing else is over", r.overCap.length === 2);
+  const today = CHK(Object.assign({}, W, { today: 20261003 }));
+  t("today's Saturday still counts as to come", today.missingAct.some(x => x.di === 1));
+  const after = CHK(Object.assign({}, W, { today: 20261011 }));
+  t("once every date has passed there is nothing to fix", Object.values(after).every(l => !l.length));
+  t("the card is shown at the top of the Allocation Report", has("  renderUpcomingChecks(el); // v169\r\n"));
+  t("Results by Date is reached through its own sub-tab", has('window._allocSub="results";window._resultsSub="bydate";'));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 S("Real data (from the supplied backup)");
 if (!skipIf(!BK, "no backup supplied — real-data checks")) {
   t("every roster house is normalised",
@@ -1270,6 +1669,14 @@ if (!skipIf(!BK, "no backup supplied — real-data checks")) {
     return !s || s.alloc !== r.alloc || s.st !== r.st; }).length;
   console.log(`  note: ${changed} of ${R1.res.length} allocation row(s) differ from the backup's stored results; ` +
     `${bakers.length} A1 Bake-Off chooser(s) with Bake-Off per-date entries`);
+
+  // v169 §1: the Saturday checks over the live backup, as of the day the backup was taken.
+  const bday = (BK._createdAt || "").slice(0, 10).replace(/-/g, "");
+  const ck = CHK({ dates: BK.dates, acts: BK.acts, staff: BK.staff, res: BK.allocRes, pupils: BK.pupils, fd: BK.formData,
+    ao: BK.allocOverrides, ado: BK.allocDateOverrides, sa: BK.sa, designations: BK.designations, today: bday ? +bday : undefined });
+  const ckUp = new Set(BK.dates.map((_, i) => i).filter(i => { const p = core.parseDateDmy(BK.dates[i].full); return p[0] * 10000 + p[1] * 100 + p[2] >= +bday; }));
+  t("the Saturday checks only report dates still to come", Object.values(ck).every(l => l.every(x => x.di == null || ckUp.has(x.di))));
+  console.log("  note: Saturday checks — " + Object.entries(ck).map(([k, l]) => k + " " + l.length).join(", "));
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1299,8 +1706,12 @@ S("Structural integrity");
 }
 
 // ── summary ──────────────────────────────────────────────────────────────────
-console.log("\n" + "═".repeat(60));
-console.log(`${pass} passed · ${fail} failed · ${skip} skipped`);
-if (failures.length) { console.log("\nFailures:"); failures.forEach(f => console.log("  • " + f)); }
-console.log("═".repeat(60));
-process.exit(fail ? 1 : 0);
+(async () => {
+  try { await p0Tests(); }
+  catch (e) { fail++; failures.push("v169 P0 → the simulation threw: " + e.message); console.log("  FAIL  the P0 simulation threw — " + (e.stack || e)); }
+  console.log("\n" + "═".repeat(60));
+  console.log(`${pass} passed · ${fail} failed · ${skip} skipped`);
+  if (failures.length) { console.log("\nFailures:"); failures.forEach(f => console.log("  • " + f)); }
+  console.log("═".repeat(60));
+  process.exit(fail ? 1 : 0);
+})();
