@@ -357,6 +357,12 @@ tr:hover td{background:var(--surface2);}
 /* v86: compact admin Activities editor + sticky activity column */
 .acts-compact th,.acts-compact td{padding:4px 6px;}
 .acts-compact .sticky-l,.acts-compact .sticky-lt{box-shadow:2px 0 4px -2px rgba(0,0,0,.12);}
+/* v168: one line per activity. Rows were 91px (four stacked staff controls, Split under Notes,
+   venue under its tag), so a 1366x768 laptop showed four activities at a time. Controls here
+   are slimmer than the app default, which is sized for forms, not a 100-row grid. */
+.acts-compact td{vertical-align:middle;}
+.acts-compact input:not([type=checkbox]),.acts-compact select{padding:2px 5px;font-size:11px;height:24px;}
+.acts-compact .act-inline{display:flex;align-items:center;gap:3px;flex-wrap:nowrap;}
 /* v86: calendar scroll containers fit the viewport so the horizontal scrollbar is reachable on open */
 .cal-scroll{max-height:calc(100vh - 230px);}
 tr:hover .sticky-l{background:var(--surface2);}
@@ -959,7 +965,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v167';
+const CURRENT_VERSION = 'v168';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -4333,11 +4339,12 @@ function rebuildAdminPreserveScroll(){
     }
     adminEl.innerHTML="";
     _renderAdminSubTo(adminEl);
-    // Update sub-tab highlights
-    const subTabs=adminEl.parentElement?.querySelector(".flex.mb-16");
-    if(subTabs)Array.from(subTabs.children).forEach(b=>{
+    // Update sub-tab highlights. v168: found the bar by ".flex.mb-16", which matched the PIN row
+    // rather than the tabs (and nothing at all once the header was compacted), so it never ran.
+    const _page=adminEl.parentElement;
+    if(_page)_page.querySelectorAll("button[data-sub]").forEach(b=>{
       const id=b.getAttribute("data-sub");
-      if(id)b.className="btn "+(adminSub===id?"btn-primary":"btn-ghost");
+      b.className="btn btn-sm "+(adminSub===id?"btn-primary":"btn-ghost");
     });
     requestAnimationFrame(()=>{
       window.scrollTo(0,sy);
@@ -12659,10 +12666,15 @@ function renderChecks(el){
 // ═══════════════════════════════════════════════
 let adminSub="activities";
 function renderAdmin(el){
-  el.appendChild(h("div",{className:"page-header"},h("h2",null,"Settings"),h("p",null,"Manage activities, staff, dates, and system configuration")));
+  // v168: the title, PIN banner and two rows of sub-tabs took ~250px before any content, which on
+  // a laptop left the Activities table starting halfway down the screen. Title and PIN now share
+  // one row, and the sub-tabs are small enough to fit on one.
+  const headRow=h("div",{className:"flex-between",style:{marginBottom:"8px",gap:"12px",flexWrap:"wrap"}});
+  headRow.appendChild(h("div",{className:"page-header",style:{marginBottom:"0"},title:"Manage activities, staff, dates, and system configuration"},h("h2",null,"Settings")));
+  el.appendChild(headRow);
 
   // Admin pin banner
-  const pinRow=h("div",{className:"flex mb-16",style:{background:adminMode?"var(--green-soft)":"var(--surface2)",border:"1px solid "+(adminMode?"var(--green)":"var(--border)"),borderRadius:"var(--radius-sm)",padding:"10px 14px",gap:"10px",alignItems:"center"}});
+  const pinRow=h("div",{className:"flex",style:{background:adminMode?"var(--green-soft)":"var(--surface2)",border:"1px solid "+(adminMode?"var(--green)":"var(--border)"),borderRadius:"var(--radius-sm)",padding:"4px 10px",gap:"8px",alignItems:"center"}});
   pinRow.appendChild(h("span",{style:{fontSize:"12px",fontWeight:600,color:adminMode?"var(--green)":"var(--text2)"}},adminMode?"🔓 Admin Mode — activity weightings visible":"🔒 Standard Mode"));
   if(!adminMode){
     const pinInp=h("input",{type:"password",placeholder:"Admin PIN",style:{width:"120px"}});
@@ -12677,9 +12689,9 @@ function renderAdmin(el){
       const np=prompt("New admin PIN:");if(np&&np.length>=4){adminPin=np;toast("PIN updated");}else if(np)toast("PIN must be 4+ characters","err");
     }},"Change PIN"));
   }
-  el.appendChild(pinRow);
+  headRow.appendChild(pinRow);
 
-  const subTabs=h("div",{className:"flex mb-16",style:{gap:"4px",flexWrap:"wrap",alignItems:"center"}});
+  const subTabs=h("div",{className:"flex",style:{gap:"4px",flexWrap:"wrap",alignItems:"center",marginBottom:"10px"}});
   // v64: grouped by purpose — Setup, then Operations, then Reference
   const _subTabGroups=[
     // Setup
@@ -12693,7 +12705,7 @@ function renderAdmin(el){
     if(gi>0)subTabs.appendChild(h("span",{style:{width:"1px",height:"22px",background:"var(--border)",margin:"0 4px"}}));
     group.forEach(st=>{
       subTabs.appendChild(h("button",{
-        className:"btn "+(adminSub===st.id?"btn-primary":"btn-ghost"),
+        className:"btn btn-sm "+(adminSub===st.id?"btn-primary":"btn-ghost"),
         "data-sub":st.id,
         onClick:()=>{adminSub=st.id;rebuildAdmin();}
       },st.l));
@@ -12704,20 +12716,33 @@ function renderAdmin(el){
   const content=h("div",{id:"admin-content"});el.appendChild(content);
   function rebuildAdmin(){
     content.innerHTML="";
-    Array.from(subTabs.children).forEach(b=>{
+    // v168: only the tab buttons — this used to restyle the group separators as empty buttons too.
+    Array.from(subTabs.querySelectorAll("button[data-sub]")).forEach(b=>{
       const id=b.getAttribute("data-sub");
-      b.className="btn "+(adminSub===id?"btn-primary":"btn-ghost");
+      b.className="btn btn-sm "+(adminSub===id?"btn-primary":"btn-ghost");
     });
     _renderAdminSubTo(content);
   }
   rebuildAdmin();
 }
 
+// v168: put a floating panel where it was opened from, but keep all of it on screen. The Split
+// panel was placed at the click with no check against the window, so opened from a lower row
+// (most of them) it ran ~450px off the bottom and its fields and Done button were unreachable.
+// Call after the panel is in the document, so it has a size. Too tall for the window, it scrolls.
+function _placePopupInView(panel,x,y){
+  const m=8,vw=window.innerWidth,vh=window.innerHeight;
+  panel.style.maxHeight=(vh-2*m)+"px";panel.style.overflowY="auto";
+  const r=panel.getBoundingClientRect();
+  const w=Math.min(r.width,vw-2*m),ht=Math.min(r.height,vh-2*m);
+  panel.style.left=Math.max(m,Math.min(x,vw-w-m))+"px";
+  panel.style.top=Math.max(m,Math.min(y,vh-ht-m))+"px";
+}
 function renderAdminActs(el){
-  el.appendChild(h("div",{className:"flex-between mb-12"},
+  el.appendChild(h("div",{className:"flex-between",style:{marginBottom:"6px"}},
     h("div",{style:{fontWeight:600}},acts.length+" activities"),
     h("div",{className:"flex",style:{gap:"8px"}},
-      h("button",{className:"btn btn-primary",onClick:()=>{
+      h("button",{className:"btn btn-primary btn-sm",onClick:()=>{
         const f=document.getElementById("add-act-form");
         if(f)f.style.display=f.style.display==="none"?"block":"none";
       }},"+ Add Activity")
@@ -12830,10 +12855,11 @@ function renderAdminActs(el){
     ls.appendChild(h("option",{value:""},"TBC"));
     sortedStaff(staff).forEach(s=>{const o=h("option",{value:s.c},s.n.split(" ")[0]+" ("+s.c+")");if(a.lead===s.c)o.selected=true;ls.appendChild(o);});
     // Additional staff — inline multi-tag picker
-    const rosterCell=h("td",{style:{minWidth:"120px"}});
-    rosterCell.appendChild(ls);
-    rosterCell.appendChild(h("div",{style:{fontSize:"9px",color:"var(--text3)",margin:"2px 0 3px"}},"Additional:"));
-    const rosterTags=h("div",{style:{display:"flex",gap:"3px",flexWrap:"wrap",marginBottom:"3px"}});
+    // v168: lead, additional-staff tags and "+ add" sit on one line (they were stacked four deep).
+    const rosterCell=h("td",null);
+    const rosterLine=h("div",{className:"act-inline"});rosterCell.appendChild(rosterLine);
+    rosterLine.appendChild(ls);
+    const rosterTags=h("div",{className:"act-inline"});
     (a.staff||[]).filter(Boolean).forEach((sc,si)=>{
       const tag=h("span",{style:{background:"var(--surface3)",border:"1px solid var(--border)",borderRadius:"4px",padding:"1px 5px",fontSize:"10px",display:"inline-flex",alignItems:"center",gap:"3px"}},
         sc,
@@ -12841,9 +12867,22 @@ function renderAdminActs(el){
       );
       rosterTags.appendChild(tag);
     });
-    rosterCell.appendChild(rosterTags);
+    rosterLine.appendChild(rosterTags);
+    // v168: one activity has 51 additional staff. On one line that made the column ~2,500px wide
+    // and pushed every other column off screen, so show three and the rest on demand.
+    const _tagEls=[...rosterTags.children];
+    if(_tagEls.length>3){
+      _tagEls.slice(3).forEach(t=>{t.style.display="none";});
+      const more=h("span",{title:(a.staff||[]).filter(Boolean).slice(3).join(", ")+" — click to show",
+        style:{cursor:"pointer",fontSize:"10px",fontWeight:700,color:"var(--accent)",padding:"1px 4px",whiteSpace:"nowrap"}},"+"+(_tagEls.length-3));
+      more.addEventListener("click",()=>{
+        _tagEls.slice(3).forEach(t=>{t.style.display="inline-flex";});more.remove();
+        rosterTags.style.flexWrap="wrap";rosterLine.style.flexWrap="wrap";rosterLine.style.maxWidth="360px";
+      });
+      rosterTags.appendChild(more);
+    }
     // Add staff picker
-    const addStaffSel=h("select",{"data-fkey":a.id+"|addstaff",style:{width:"75px",fontSize:"10px"},onChange:e=>{
+    const addStaffSel=h("select",{"data-fkey":a.id+"|addstaff",title:"Add another member of staff",style:{width:"64px",fontSize:"10px"},onChange:e=>{
       const val=e.target.value;if(!val)return;
       if(!a.staff)a.staff=[];
       if(!a.staff.includes(val)&&val!==a.lead){a.staff.push(val);syncRosterToCalendar();rebuildAdminPreserveScroll();}
@@ -12855,33 +12894,41 @@ function renderAdminActs(el){
         addStaffSel.appendChild(h("option",{value:s.c},s.n.split(" ")[0]+" ("+s.c+")"));
       }
     });
-    rosterCell.appendChild(addStaffSel);
+    rosterLine.appendChild(addStaffSel);
     tr.appendChild(rosterCell);
     const venueTd=h("td",null);
     const hasSplitVenues=(a.sessAVenue||a.sessBVenue);
-    const venueWidget=mkVenueMultiSel(a,{width:"112px",fontSize:"10px",onDone:()=>{}});
+    // v168: wide enough for one venue and "+ venue" on one line; an activity with several venues
+    // wraps rather than spilling over the Notes column.
+    const venueWidget=mkVenueMultiSel(a,{width:"270px",fontSize:"10px",onDone:()=>{}});
+    venueWidget.style.width="270px";venueWidget.style.flex="0 0 auto";   // else the table squeezes it to min-content and it always wraps
     if(hasSplitVenues){venueWidget.style.opacity="0.5";venueWidget.title="Split session venues take priority on timetables. This field is used for RA exports and form guide only.";}
-    venueTd.appendChild(venueWidget);
+    const venueLine=h("div",{className:"act-inline"},venueWidget);
+    venueTd.appendChild(venueLine);
     if(a.sessAVenue||a.sessBVenue){
-      venueTd.appendChild(h("div",{style:{fontSize:"8px",color:"var(--purple)",marginTop:"2px",lineHeight:"1.3"}},"A: "+(a.sessAVenue||"—")+" B: "+(a.sessBVenue||"—")));
+      // v168: was a second line under the widget; now a badge with the detail on hover.
+      venueLine.appendChild(h("span",{title:"Split-session venues — A: "+(a.sessAVenue||"—")+"   B: "+(a.sessBVenue||"—"),
+        style:{fontSize:"9px",fontWeight:700,color:"var(--purple)",background:"var(--purple-soft)",borderRadius:"3px",padding:"1px 4px",cursor:"help"}},"A/B"));
     }
     tr.appendChild(venueTd);
     // Notes + split-session toggle
-    const notesTd=h("td",null,mk("notes","90px"));
+    const notesLine=h("div",{className:"act-inline"},mk("notes","90px"));   // v168: Split sits beside Notes
+    const notesTd=h("td",null,notesLine);
     // Split-session indicator/toggle
     const hasSplit=isSplitAct(a);
     const splitBtn=h("button",{
       className:"btn btn-xs "+(hasSplit?"btn-purple":"btn-ghost"),
-      style:{marginTop:"3px",fontSize:"9px",display:"block",background:hasSplit?"var(--purple-soft)":"",color:hasSplit?"var(--purple)":""},
+      style:{fontSize:"9px",background:hasSplit?"var(--purple-soft)":"",color:hasSplit?"var(--purple)":""},
       title:"Configure split A/B session details (for activities like Pilates & Embroidery)",
       onClick:(e)=>{
         e.stopPropagation();
         const existing=document.getElementById("split-sess-panel-"+a.id);
         if(existing){existing.remove();return;}
         const panel=h("div",{id:"split-sess-panel-"+a.id,style:{position:"fixed",zIndex:500,background:"var(--surface)",border:"1px solid var(--border2)",borderRadius:"var(--radius)",boxShadow:"var(--shadow-lg)",padding:"14px",width:"340px",top:e.clientY+"px",left:Math.min(e.clientX,window.innerWidth-360)+"px"}});
+        const _clickX=e.clientX,_clickY=e.clientY;
         panel.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"10px",display:"flex",justifyContent:"space-between"}},
           "Split Session: "+a.n,h("button",{className:"btn btn-ghost btn-xs",onClick:()=>panel.remove()},"✕")));
-        panel.appendChild(h("div",{style:{fontSize:"11px",color:"var(--text3)",marginBottom:"10px",lineHeight:"1.5"}},"For activities where Session A and B have different names, venues, and staff (e.g. Pilates then Embroidery). All allocated pupils do both sessions. "+h("strong",null,"Session A/B venues override the main venue field")+" on pupil timetables and staff calendars. The main venue field is still used for RA exports and form guides."));
+        panel.appendChild(h("div",{style:{fontSize:"11px",color:"var(--text3)",marginBottom:"10px",lineHeight:"1.5"}},"For activities where Session A and B have different names, venues, and staff (e.g. Pilates then Embroidery). All allocated pupils do both sessions. ",h("strong",null,"Session A/B venues override the main venue field")," on pupil timetables and staff calendars. The main venue field is still used for RA exports and form guides."));
         const splitSummary=h("div",{style:{fontSize:"10px",color:"var(--text2)",background:"var(--surface2)",borderRadius:"4px",padding:"6px 8px",margin:"4px 0 2px",lineHeight:"1.5"}});
         const _updSplitSummary=()=>{
           const segs=isSplitAct(a)
@@ -12926,9 +12973,10 @@ function renderAdminActs(el){
         }},"Clear"));
         panel.appendChild(splitBtnRow);
         document.body.appendChild(panel);
+        _placePopupInView(panel,_clickX,_clickY);   // v168
       }
     },hasSplit?"✂ Split":"✂ Split");
-    notesTd.appendChild(splitBtn);
+    notesLine.appendChild(splitBtn);
     tr.appendChild(notesTd);
     tr.appendChild(h("td",null,mk("cost","46px")));
     // Billing scope: per-date or per-block (fixed for all dates)

@@ -1175,6 +1175,34 @@ var ENG = (w) => new Function("W", `
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+S("v168 — Activities editor fits the screen");
+{
+  // _placePopupInView against a fake window and panel; it only reads sizes and writes styles.
+  const place = (vw, vh, pw, ph, x, y) => {
+    const panel = { style: {}, getBoundingClientRect: () => ({ width: pw, height: ph }) };
+    new Function("window", grab("function _placePopupInView(panel,x,y){", "\r\n}", "_placePopupInView") +
+      "\nreturn _placePopupInView;")({ innerWidth: vw, innerHeight: vh })(panel, x, y);
+    return { top: parseInt(panel.style.top, 10), left: parseInt(panel.style.left, 10), maxH: parseInt(panel.style.maxHeight, 10), ov: panel.style.overflowY };
+  };
+  // The case that broke: a 533px panel opened from a row near the bottom of a 768px laptop screen.
+  let p = place(1366, 768, 340, 533, 740, 691);
+  t("a panel opened low on the screen is moved up so all of it shows", p.top + 533 <= 768 - 8 && p.top >= 8, JSON.stringify(p));
+  t("a panel that fits stays where it was opened", place(1366, 768, 340, 300, 740, 100).top === 100);
+  p = place(1366, 500, 340, 533, 740, 300);
+  t("a panel taller than the window starts at the top and scrolls", p.top === 8 && p.maxH === 484 && p.ov === "auto", JSON.stringify(p));
+  t("a panel opened near the right edge is kept on screen", place(1366, 768, 340, 300, 1300, 100).left === 1366 - 340 - 8);
+  t("the Split panel is placed with it, after it is in the document",
+    has("document.body.appendChild(panel);\r\n        _placePopupInView(panel,_clickX,_clickY);"));
+  t("staff controls share one line (no stacked 'Additional:' label)", !has('"Additional:"') && has('const rosterLine=h("div",{className:"act-inline"})'));
+  t("more than three additional staff collapse behind a +N", has("if(_tagEls.length>3){") && has('"+"+(_tagEls.length-3)'));
+  t("Split sits beside Notes", has("notesLine.appendChild(splitBtn);"));
+  t("rows are slimmed only inside this table", has(".acts-compact input:not([type=checkbox]),.acts-compact select{padding:2px 5px;font-size:11px;height:24px;}"));
+  t("the Split help text no longer prints [object HTMLElement]", !has('both sessions. "+h("strong"'));
+  t("sub-tab separators are no longer restyled as buttons", has('subTabs.querySelectorAll("button[data-sub]")') && !has("Array.from(subTabs.children).forEach"));
+  t("both tab-highlight paths keep the compact size", (src.match(/b\.className="btn btn-sm "\+\(adminSub===id\?"btn-primary":"btn-ghost"\);/g) || []).length === 2);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 S("Real data (from the supplied backup)");
 if (!skipIf(!BK, "no backup supplied — real-data checks")) {
   t("every roster house is normalised",
