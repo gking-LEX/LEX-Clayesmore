@@ -1287,6 +1287,15 @@ S("Structural integrity");
   t("planning mode is off (live system)", /\nconst PLANNING_YEAR_MODE = false;/.test(src));
   t("term label is a single constant", /const TERM_LABEL = "/.test(src));
   t("no hard-coded previous term remains", !src.includes("Summer 2026"));
+  // The site root forwards to the live file, keeping #staff / #pupil (old bookmarks used to open
+  // last year's app). Fails at a year rollover until index.html points at the new year's file.
+  const idxPath = require("path").join(require("path").dirname(HTML), "index.html");
+  if (!skipIf(!fs.existsSync(idxPath), "no index.html beside the app — site-root redirect check")) {
+    const idx = fs.readFileSync(idxPath, "utf-8");
+    t("the site root forwards to this file", idx.includes('var LIVE = "' + require("path").basename(HTML) + '";'));
+    t("and keeps #staff / #pupil on the way", idx.includes("location.replace(LIVE + location.search + location.hash);"));
+    t("the site root is a redirect, not a copy of the app", idx.length < 5000, String(idx.length));
+  }
 }
 
 // ── summary ──────────────────────────────────────────────────────────────────
