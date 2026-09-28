@@ -1687,6 +1687,186 @@ var LVR = w => new Function("W", `
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// v171 — block set lists (runs at the end with P0: reading an .xlsx is async).
+var BLK_SRC = [
+  grab("function normEmail(", "\r\n", "normEmail"),
+  grab("const BLOCK_SUBJECT_NAMES={", "};", "BLOCK_SUBJECT_NAMES"),
+  grab("const BLOCK_FREE=", "\r\n", "BLOCK_FREE"),
+  grab("async function _unzipXmlEntries(", "\r\n}", "_unzipXmlEntries"),
+  grab("function _xmlUnescape(", "\r\n}", "_xmlUnescape"),
+  grab("function _xmlRunsText(", "\r\n}", "_xmlRunsText"),
+  grab("async function readXlsxSheets(", "\r\n}", "readXlsxSheets"),
+  grab("function parseSetListSheets(", "\r\n}", "parseSetListSheets"),
+  grab("function _nameKey(", "\r\n", "_nameKey"),
+  grab("function _pupilYgNum(", "\r\n", "_pupilYgNum"),
+  grab("function matchSetPupils(", "\r\n}", "matchSetPupils"),
+  grab("function blockImportDiff(", "\r\n}", "blockImportDiff"),
+  grab("function blockImportDefaults(", "\r\n}", "blockImportDefaults"),
+  grab("function blockImportRows(", "\r\n}", "blockImportRows"),
+  grab("function blockCurrent(", "\r\n}", "blockCurrent"),
+  grab("function _blkHeaders(", "\r\n", "_blkHeaders"),
+  grab("async function _blkPost(", "\r\n}", "_blkPost"),
+  grab("async function blocksCommit(", "\r\n}", "blocksCommit")
+].join("\n");
+var BLK = w => new Function("W", `
+  let pupils=W.pupils||[],staff=W.staff||[];const PFX=W.pfx||"lex12";const supaClient={url:"https://db.test",key:"k"};const fetch=W.fetch||(async()=>({ok:true}));
+  ${BLK_SRC}
+  return {readXlsxSheets,parseSetListSheets,matchSetPupils,blockImportDiff,blockImportDefaults,blockImportRows,blockCurrent,blocksCommit,_pupilYgNum};`)(w);
+// A minimal .xlsx writer for invented workbooks: a zip (deflated, or stored for the names in
+// `stored`) of the XML parts the reader looks at. Cells: strings → shared strings, numbers → values;
+// a sheet may give its own raw XML to exercise inline strings, entities and gaps.
+var mkZip = (files, stored) => {
+  const zlib = require("zlib"), parts = [], cd = []; let off = 0;
+  for (const [name, text] of Object.entries(files)) {
+    const raw = Buffer.from(text, "utf8"), st = (stored || []).includes(name), data = st ? raw : zlib.deflateRawSync(raw), nb = Buffer.from(name);
+    const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(st ? 0 : 8, 8);
+    lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(raw.length, 22); lh.writeUInt16LE(nb.length, 26);
+    const ch = Buffer.alloc(46); ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(st ? 0 : 8, 10);
+    ch.writeUInt32LE(data.length, 20); ch.writeUInt32LE(raw.length, 24); ch.writeUInt16LE(nb.length, 28); ch.writeUInt32LE(off, 42);
+    parts.push(lh, nb, data); cd.push(ch, nb); off += 30 + nb.length + data.length;
+  }
+  const cdb = Buffer.concat(cd), e = Buffer.alloc(22), n = Object.keys(files).length;
+  e.writeUInt32LE(0x06054b50, 0); e.writeUInt16LE(n, 8); e.writeUInt16LE(n, 10); e.writeUInt32LE(cdb.length, 12); e.writeUInt32LE(off, 16);
+  return Buffer.concat([...parts, cdb, e]);
+};
+var mkXlsx = (sheets, stored) => {
+  const ss = [], si = s => { let i = ss.indexOf(s); if (i < 0) { ss.push(s); i = ss.length - 1; } return i; };
+  const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const colL = i => { let s = ""; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
+  const files = {};
+  sheets.forEach((sh, k) => {
+    files["xl/worksheets/sheet" + (k + 1) + ".xml"] = sh.xml || ('<?xml version="1.0"?><worksheet><sheetData>' + sh.rows.map((r, ri) =>
+      '<row r="' + (ri + 1) + '">' + r.map((c, ci) => c === "" || c == null ? "" : typeof c === "number"
+        ? '<c r="' + colL(ci) + (ri + 1) + '"><v>' + c + '</v></c>' : '<c r="' + colL(ci) + (ri + 1) + '" t="s"><v>' + si(c) + '</v></c>').join("") + '</row>').join("") + '</sheetData></worksheet>');
+  });
+  files["xl/workbook.xml"] = '<workbook xmlns:r="x"><sheets>' + sheets.map((sh, k) => '<sheet name="' + esc(sh.name) + '" sheetId="' + (k + 1) + '" r:id="rId' + (k + 1) + '"/>').join("") + '</sheets></workbook>';
+  files["xl/_rels/workbook.xml.rels"] = '<Relationships>' + sheets.map((sh, k) => '<Relationship Id="rId' + (k + 1) + '" Target="worksheets/sheet' + (k + 1) + '.xml"/>').join("") + '</Relationships>';
+  files["xl/sharedStrings.xml"] = '<sst>' + ss.map(s => '<si><t>' + esc(s) + '</t></si>').join("") + '</sst>';
+  files["docProps/thumbnail.jpeg"] = "not xml";
+  return mkZip(files, stored);
+};
+// An invented set list in the iSAMS shape. dob is a real-looking column that must never be read.
+var mkSetSheet = (code, teacher, rows) => ({ name: code.replace(/\//g, "-") + " - (13)", rows: [
+  [code + " - Set List (" + code + ") - Mx TEACHER (" + teacher + ")"],
+  ["Surname", "Forename (Firstname)", "Date of Birth", "Academic House", "Year Group Code", "House Code"],
+  ...rows.map(r => [r[0], r[1], 38000 + r[0].length, "Manor", "13", "M"]),
+  ["Total: " + rows.length + "   |   Boys: 0   |   Girls: 0"], ["Average Age: 17.5   |   Max Age: 18.0   |   Min Age: 17.0"]] });
+async function blockTests() {
+  S("v171 — Block set lists (import)");
+  // Invented pupils — this file is in a public repository.
+  const pupils = [
+    { forename: "Ada", pref: "", surname: "Quill", yg: "Year 13", email: "ada.q@x.com" },
+    { forename: "Benedict", pref: "Ben", surname: "Rook", yg: "Year 13", email: "ben.r@x.com" },
+    { forename: "Chloé", pref: "", surname: "Stave", yg: "Year 13", email: "chloe.s@x.com" },
+    { forename: "Dan", pref: "", surname: "Twill", yg: "Year 13", email: "dan.t1@x.com" },
+    { forename: "Dan", pref: "", surname: "Twill", yg: "Year 13", email: "dan.t2@x.com" },
+    { forename: "Eve", pref: "", surname: "Umber", yg: "Year 12", email: "eve.u@x.com" },
+    { forename: "Fay", pref: "", surname: "Vole", yg: "Year 13", email: "fay.v@x.com" },
+    { forename: "Kit", pref: "", surname: "Wren", yg: "Year 13", email: "kit.w@x.com" }    // known by the bracketed name only
+  ];
+  const staff = [{ c: "TCH", n: "Tee Chair" }, { c: "OTH", n: "Oth Er" }];
+  const B = BLK({ pupils, staff });
+  // Reader
+  const buf = mkXlsx([
+    mkSetSheet("PSY/13/A", "TCH", [["Quill", "Ada"], ["Rook", "Benedict (Ben)"], ["Stave", "Chloe"], ["Wren", "Christopher (Kit)"]]),
+    mkSetSheet("ART/13/A", "NEW", [["Vole", "Fay"], ["Rook", "Ben"]]),
+    mkSetSheet("BUS/13/B", "OTH", [["Twill", "Dan"], ["Umber", "Eve"], ["Nobody", "Here"], ["Quill", "Ada"], ["Quill", "Ada"]]),
+    { name: "Raw & odd", xml: '<worksheet><sheetData><row r="2"><c r="A2" t="inlineStr"><is><t>R&amp;D</t><rPh><t>x</t></rPh></is></c><c r="C2" s="1"/>' +
+      '<c r="D2"><v>4.5</v></c></row><row r="3" spans="1:2"/></sheetData></worksheet>' }
+  ], ["xl/worksheets/sheet1.xml"]);
+  const sheets = await B.readXlsxSheets(buf);
+  t("reads every sheet, in workbook order", sheets.map(s => s.name).join("|") === "PSY-13-A - (13)|ART-13-A - (13)|BUS-13-B - (13)|Raw & odd");
+  t("reads a stored entry and a deflated one alike", sheets[0].rows[2][0] === "Quill" && sheets[1].rows[2][0] === "Vole");
+  t("shared strings, numbers and the header row come back as text", sheets[0].rows[1][0] === "Surname" && /^\d+$/.test(sheets[0].rows[2][2]));
+  const raw = sheets[3].rows;
+  t("inline strings, entities and phonetic hints", raw[1][0] === "R&D");
+  t("row and column gaps keep positions (A2, D2)", raw.length >= 2 && raw[0].length === 0 && raw[1][3] === "4.5" && raw[1][1] === "");
+  let threw = ""; try { await B.readXlsxSheets(Buffer.from("not a zip at all")); } catch (e) { threw = e.message; }
+  t("a file that isn't an .xlsx is refused with a plain message", /isn't an Excel/.test(threw), threw);
+  // Parse
+  const P = B.parseSetListSheets(sheets);
+  t("one set per set-list sheet; the odd sheet is reported, not guessed", P.sets.length === 3 && P.problems.length === 1 && P.problems[0].sheet === "Raw & odd");
+  const psy = P.sets[0];
+  t("set code, subject, year, block and teacher from the first cell",
+    psy.setCode === "PSY/13/A" && psy.subjectCode === "PSY" && psy.yg === "13" && psy.block === "A" && psy.teacher === "TCH");
+  t("footer rows are not pupils", psy.pupils.length === 4 && P.sets[2].pupils.length === 5);
+  t("a bracketed first name is kept apart from the forename", psy.pupils[1].forename === "Benedict" && psy.pupils[1].alt === "Ben");
+  t("Date of Birth (and every other column) is never read", P.sets.every(s => s.pupils.every(r => Object.keys(r).join() === "surname,forename,alt"))
+    && !JSON.stringify(P).includes("380"));
+  const P2 = B.parseSetListSheets([{ name: "x", rows: [["MATH/13/C2 - Set List (MATH/13/C2) - Mx A (AB)"], ["Surname", "Forename (Firstname)"], ["Quill", "Ada"]] }]);
+  t("a set code with a suffix after the block letter", P2.sets[0].setCode === "MATH/13/C2" && P2.sets[0].block === "C");
+  // Match
+  const M = B.matchSetPupils(P, {});
+  const set = code => M.members.filter(m => m.setCode === code).map(m => m.email).sort().join();
+  t("forename, bracketed name, preferred name and accents all match", set("PSY/13/A") === "ada.q@x.com,ben.r@x.com,chloe.s@x.com,kit.w@x.com", set("PSY/13/A"));
+  t("a pupil in two sets of one block is a clash", M.clashes.length === 1 && M.clashes[0].email === "ben.r@x.com" && M.clashes[0].sets.join() === "PSY/13/A,ART/13/A");
+  t("two roster pupils with one name are not guessed", M.unmatched.some(u => u.row.surname === "Twill" && u.candidates.length === 2));
+  t("a pupil in another year group doesn't match", M.unmatched.some(u => u.row.surname === "Umber" && /no pupil/.test(u.why)));
+  t("a name nobody has is listed", M.unmatched.some(u => u.row.surname === "Nobody"));
+  t("listed twice in one set counts once", M.members.filter(m => m.email === "ada.q@x.com" && m.block === "B").length === 1);
+  const twill = M.unmatched.find(u => u.row.surname === "Twill"), umber = M.unmatched.find(u => u.row.surname === "Umber"), nob = M.unmatched.find(u => u.row.surname === "Nobody");
+  const M2 = B.matchSetPupils(P, { [twill.key]: "dan.t2@x.com", [umber.key]: "", [nob.key]: "" });
+  t("a choice on the review screen settles a name", M2.members.some(m => m.email === "dan.t2@x.com" && m.setCode === "BUS/13/B") && !M2.unmatched.length);
+  t("…and 'leave out' leaves it out", !M2.members.some(m => m.email === "eve.u@x.com"));
+  // Defaults, rows, current batch, diff
+  const D = B.blockImportDefaults(P, { sets: [] });
+  t("lead defaults to the teacher when they're on the LEX roster", D.sets["PSY/13/A"].lead === "TCH" && D.sets["BUS/13/B"].lead === "OTH");
+  t("…and to TBC when they aren't — staff are never created", D.sets["ART/13/A"].lead === "");
+  t("subject names offered from the built-in list", D.sets["PSY/13/A"].subject === "Psychology");
+  t("the 'not in a set' fallback starts as Supported Study", D.free["13"].subject === "Y13 Supported Study" && D.free["13"].lead === "");
+  const prev = { sets: [{ yg: "13", set_code: "PSY/13/A", subject_code: "PSY", subject: "Psych (A level)", lead: "OTH", venue: "PY01" },
+    { yg: "13", set_code: "HSC/13/D", subject_code: "ART", subject: "Fine Art", lead: "", venue: "" },
+    { yg: "13", set_code: "__FREE__", subject: "Study", lead: "TCH", venue: "Library" }] };
+  const D2 = B.blockImportDefaults(P, prev);
+  t("a re-import keeps the lead, venue and name chosen last time", D2.sets["PSY/13/A"].lead === "OTH" && D2.sets["PSY/13/A"].venue === "PY01" && D2.sets["PSY/13/A"].subject === "Psych (A level)");
+  t("a name saved for a subject code is offered for its other sets", D2.sets["ART/13/A"].subject === "Fine Art");
+  t("…and the fallback too", D2.free["13"].subject === "Study" && D2.free["13"].lead === "TCH" && D2.free["13"].venue === "Library");
+  const R = B.blockImportRows(P, M2, D, "B2");
+  t("rows: every set, one fallback per year group, every member, one batch",
+    R.sets.length === 4 && R.sets.filter(s => s.set_code === "__FREE__" && s.block === "*").length === 1 && R.members.length === M2.members.length
+    && [...R.sets, ...R.members].every(r => r.batch === "B2" && r.pfx === "lex12"));
+  const old = [{ yg: "13", batch: "B1", block: "A", set_code: "PSY/13/A" }, { yg: "12", batch: "B0", block: "A", set_code: "X/12/A" }];
+  const oldM = [{ yg: "13", batch: "B1", block: "A", email: "ada.q@x.com", set_code: "PSY/13/A" }, { yg: "13", batch: "B1", block: "A", email: "fay.v@x.com", set_code: "PSY/13/A" },
+    { yg: "13", batch: "B1", block: "B", email: "gone@x.com", set_code: "BUS/13/B" }, { yg: "12", batch: "B0", block: "A", email: "eve.u@x.com", set_code: "X/12/A" },
+    { yg: "13", batch: "B3", block: "A", email: "half@x.com", set_code: "PSY/13/A" }];   // an import that never finished
+  const C = B.blockCurrent(old, oldM);
+  t("the current import is the newest batch with sets rows, per year group", C.batches["13"] === "B1" && C.batches["12"] === "B0");
+  t("members of an unfinished import are ignored", !C.members.some(m => m.email === "half@x.com") && C.members.length === 4);
+  const d = B.blockImportDiff(M2.members, C.members);
+  t("diff: joiners, movers and leavers", d.joiners.some(x => x.email === "ben.r@x.com") && d.moves.some(x => x.email === "fay.v@x.com" && x.from === "PSY/13/A" && x.to === "ART/13/A")
+    && d.leavers.some(x => x.email === "gone@x.com"));
+  t("…and another year group is not touched by it", !d.leavers.some(x => x.email === "eve.u@x.com"));
+  // Commit order: members, then sets (the switch), then tidy.
+  const calls = [];
+  const BC = BLK({ pupils, staff, fetch: async (url, o) => { calls.push((o.method || "GET") + " " + url.split("/rest/v1/")[1]); return { ok: true, text: async () => "" }; } });
+  await BC.blocksCommit(R);
+  t("commit writes members first, then sets, then removes older batches",
+    /^POST lex_block_members/.test(calls[0]) && /^POST lex_block_sets/.test(calls[1]) && calls.slice(2).every(c => /^DELETE .*batch=neq\.B2/.test(c)) && calls.length === 4, calls.join(" ; "));
+  const calls2 = [];
+  const BF = BLK({ pupils, staff, fetch: async (url, o) => { calls2.push((o.method || "GET") + " " + url.split("/rest/v1/")[1]); return /members/.test(url) ? { ok: false, status: 500, text: async () => "boom" } : { ok: true, text: async () => "" }; } });
+  let err = ""; try { await BF.blocksCommit(R); } catch (e) { err = e.message; }
+  t("if the members can't be written, the sets are never switched", /lex_block_members/.test(err) && !calls2.some(c => /lex_block_sets/.test(c)));
+  // Page wiring
+  t("Settings has a Blocks tab", has('{id:"blocks",l:"🧱 Blocks"}') && has('else if(adminSub==="blocks")renderAdminBlocks(container); // v171'));
+  t("the setup SQL keys both tables by batch (so an import switches in one step)",
+    has("primary key (pfx, yg, batch, block, set_code)") && has("primary key (pfx, yg, batch, block, email)"));
+  // Real data, when the set lists are in local-data/ (never committed).
+  const xl = require("path").join(require("path").dirname(HTML), "local-data", "Y13-sets.xlsx");
+  if (!skipIf(!BK || !fs.existsSync(xl), "no backup or no local-data/Y13-sets.xlsx — real set lists")) {
+    const BR = BLK({ pupils: BK.pupils, staff: BK.staff });
+    const PR = BR.parseSetListSheets(await BR.readXlsxSheets(fs.readFileSync(xl)));
+    const MR = BR.matchSetPupils(PR, {});
+    const per = {}; PR.sets.forEach(s => { per[s.block] = (per[s.block] || 0) + 1; });
+    const y13 = BK.pupils.filter(p => BR._pupilYgNum(p) === "13").map(p => ne(p.email));
+    const free = {}; ["A", "B", "C", "D"].forEach(bl => { const s = new Set(MR.members.filter(m => m.block === bl).map(m => m.email)); free[bl] = y13.filter(e => !s.has(e)).length; });
+    t("real Y13 set lists: 24 sets (A 6 · B 6 · C 8 · D 4)", PR.sets.length === 24 && JSON.stringify(per) === JSON.stringify({ A: 6, C: 8, D: 4, B: 6 }) && !PR.problems.length, JSON.stringify(per));
+    t("…46 pupils, every row matched, no clashes", new Set(MR.members.map(m => m.email)).size === 46 && !MR.unmatched.length && !MR.clashes.length);
+    t("…free in each block A 11 · B 18 · C 8 · D 14", JSON.stringify(free) === '{"A":11,"B":18,"C":8,"D":14}', JSON.stringify(free));
+    t("…and nothing but names read from it", PR.sets.every(s => s.pupils.every(r => Object.keys(r).join() === "surname,forename,alt")));
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 S("Real data (from the supplied backup)");
 if (!skipIf(!BK, "no backup supplied — real-data checks")) {
   t("every roster house is normalised",
@@ -1805,6 +1985,8 @@ S("Structural integrity");
 (async () => {
   try { await p0Tests(); }
   catch (e) { fail++; failures.push("v169 P0 → the simulation threw: " + e.message); console.log("  FAIL  the P0 simulation threw — " + (e.stack || e)); }
+  try { await blockTests(); }
+  catch (e) { fail++; failures.push("v171 blocks → the tests threw: " + e.message); console.log("  FAIL  the block tests threw — " + (e.stack || e)); }
   console.log("\n" + "═".repeat(60));
   console.log(`${pass} passed · ${fail} failed · ${skip} skipped`);
   if (failures.length) { console.log("\nFailures:"); failures.forEach(f => console.log("  • " + f)); }

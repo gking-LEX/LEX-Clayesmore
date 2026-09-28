@@ -965,7 +965,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v170';
+const CURRENT_VERSION = 'v171';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -4630,6 +4630,7 @@ function _renderAdminSubTo(container){
   else if(adminSub==="help")renderFormGuide(container);
   else if(adminSub==="venues")renderVenues(container);
   else if(adminSub==="feedback")renderFeedbackAdmin(container); // v159
+  else if(adminSub==="blocks")renderAdminBlocks(container); // v171
 }
 
 function rebuildAdminPreserveScroll(){
@@ -13134,18 +13135,18 @@ function renderAdmin(el){
   // v64: grouped by purpose — Setup, then Operations, then Reference
   const _subTabGroups=[
     // Setup
-    [{id:"activities",l:"Activities"},{id:"staff",l:"Staff"},{id:"dates",l:"Dates"},{id:"pupils",l:"👥 Pupils"},{id:"parents",l:"👨‍👩‍👧 Parents"}],
+    [{id:"activities",l:"Activities"},{id:"staff",l:"Staff"},{id:"dates",l:"Dates"},{id:"pupils",l:"👥 Pupils"},{id:"parents",l:"👨‍👩‍👧 Parents"},{id:"blocks",l:"🧱 Blocks"}],
     // Operations
-    [{id:"bulk",l:"📥 Bulk Import"},{id:"term",l:"🔄 New Term"},{id:"sync",l:"☁ Cloud Sync"},{id:"feedback",l:"⭐ Pupil Feedback"}],
+    [{id:"bulk",l:"📥 Bulk Import"},{id:"term",l:"🔄 New Term"},{id:"sync",l:"☁ Cloud Sync"},{id:"feedback",l:"⭐ Feedback",t:"Pupil Feedback"}],
     // Reference
-    [{id:"weighting",l:"⚖ Weighting"},{id:"log",l:"📋 Activity Log"},{id:"consent",l:"✓ Consent Audit"},{id:"help",l:"📖 Form Guide"}]
+    [{id:"weighting",l:"⚖ Weighting"},{id:"log",l:"📋 Activity Log"},{id:"consent",l:"✓ Consent",t:"Consent Audit"},{id:"help",l:"📖 Form Guide"}]
   ];
   _subTabGroups.forEach((group,gi)=>{
     if(gi>0)subTabs.appendChild(h("span",{style:{width:"1px",height:"22px",background:"var(--border)",margin:"0 4px"}}));
     group.forEach(st=>{
       subTabs.appendChild(h("button",{
         className:"btn btn-sm "+(adminSub===st.id?"btn-primary":"btn-ghost"),
-        "data-sub":st.id,
+        "data-sub":st.id,title:st.t||"",   // v171: two labels shortened so the tabs, with Blocks, stay on one row at 1366
         onClick:()=>{adminSub=st.id;rebuildAdmin();}
       },st.l));
     });
@@ -14994,6 +14995,441 @@ function renderFeedbackPrompt(pupil,rows,isPreview){
     box.appendChild(card);
   });
   return box;
+}
+// ═══════════════════════════════════════════════
+// v171: BLOCK TIMETABLE — SET LISTS (brief §9, part 1: import and review)
+// ═══════════════════════════════════════════════
+// On LEX THINK Saturdays each pupil goes to their own subject set for the block, not one
+// activity per subject combination (about 49 activities for two Y13 Saturdays — ruled out).
+// This part imports the iSAMS set lists and stores them; nothing pupil-facing reads them yet.
+// Per-row tables, per the architecture rule: many people never write these at once, but an
+// import replaces a year group's whole membership, and that switch must be all-or-nothing.
+// Every import writes a new batch — members first, then the sets rows, which are what make a
+// batch current (the newest batch in lex_block_sets for that year group). A failure part-way
+// leaves the previous import in force; old batches are deleted only after the switch.
+const BLOCK_SETUP_SQL=`-- LEX block timetable (v171). Run once in the Supabase SQL editor for this project.
+create table if not exists public.lex_block_sets (
+  pfx text not null,
+  yg text not null,
+  batch text not null,
+  block text not null,
+  set_code text not null,
+  subject_code text not null default '',
+  subject text not null default '',
+  lead text not null default '',
+  venue text not null default '',
+  teacher text not null default '',
+  updated_at timestamptz not null default now(),
+  primary key (pfx, yg, batch, block, set_code)
+);
+create table if not exists public.lex_block_members (
+  pfx text not null,
+  yg text not null,
+  batch text not null,
+  block text not null,
+  email text not null,
+  set_code text not null,
+  primary key (pfx, yg, batch, block, email)
+);
+alter table public.lex_block_sets enable row level security;
+alter table public.lex_block_members enable row level security;
+drop policy if exists "lex_block_sets all" on public.lex_block_sets;
+create policy "lex_block_sets all" on public.lex_block_sets for all to anon, authenticated using (true) with check (true);
+drop policy if exists "lex_block_members all" on public.lex_block_members;
+create policy "lex_block_members all" on public.lex_block_members for all to anon, authenticated using (true) with check (true);
+grant select, insert, update, delete on public.lex_block_sets to anon, authenticated;
+grant select, insert, update, delete on public.lex_block_members to anon, authenticated;`;
+// Names offered for iSAMS subject codes on first import; every one is shown for checking
+// before anything is saved, and a name saved once is offered again next time.
+const BLOCK_SUBJECT_NAMES={ART:"Art",BIO:"Biology",BUS:"Business",CHEM:"Chemistry",DT:"Design & Technology",ECON:"Economics",
+  ENG:"English",GEO:"Geography",HIS:"History",HOSP:"Hospitality",HSC:"Health & Social Care",MATH:"Maths",PHO:"Photography",
+  PHY:"Physics",PSY:"Psychology",SPA:"Spanish",SPO:"Sport"};
+const BLOCK_FREE="__FREE__";   // the "not in a set" row for a year group (block "*")
+
+// ── Reading .xlsx without a library ──
+// An .xlsx is a zip of XML files. Browsers (and Node, for the tests) can inflate zip entries
+// natively (DecompressionStream), so the set lists are read here rather than by loading a
+// spreadsheet library from a CDN — the tests then run this exact code over the real file.
+async function _unzipXmlEntries(buf){
+  const u8=new Uint8Array(buf),dv=new DataView(u8.buffer,u8.byteOffset,u8.byteLength),dec=new TextDecoder("utf-8");
+  let eocd=-1;
+  for(let i=u8.length-22;i>=Math.max(0,u8.length-65557);i--){if(dv.getUint32(i,true)===0x06054b50){eocd=i;break;}}
+  if(eocd<0)throw new Error("This isn't an Excel (.xlsx) file.");
+  const n=dv.getUint16(eocd+10,true);let p=dv.getUint32(eocd+16,true);
+  const out={};
+  for(let k=0;k<n;k++){
+    if(dv.getUint32(p,true)!==0x02014b50)throw new Error("The .xlsx file is damaged.");
+    const method=dv.getUint16(p+10,true),csize=dv.getUint32(p+20,true),nlen=dv.getUint16(p+28,true);
+    const xlen=dv.getUint16(p+30,true),clen=dv.getUint16(p+32,true),off=dv.getUint32(p+42,true);
+    const name=dec.decode(u8.subarray(p+46,p+46+nlen));
+    p+=46+nlen+xlen+clen;
+    if(!/\.(xml|rels)$/i.test(name))continue;
+    // Sizes come from the central directory: the local header's may be zero (streamed zips).
+    const start=off+30+dv.getUint16(off+26,true)+dv.getUint16(off+28,true);
+    const data=u8.subarray(start,start+csize);
+    let raw;
+    if(method===0)raw=data;
+    else if(method===8)raw=new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
+    else throw new Error("The .xlsx file uses a compression LEX can't read ("+method+").");
+    out[name]=dec.decode(raw);
+  }
+  return out;
+}
+function _xmlUnescape(s){
+  return String(s).replace(/&(amp|lt|gt|quot|apos|#x[0-9a-fA-F]+|#\d+);/g,(m,e)=>e==="amp"?"&":e==="lt"?"<":e==="gt"?">":e==="quot"?'"':e==="apos"?"'"
+    :String.fromCodePoint(e[1]==="x"||e[1]==="X"?parseInt(e.slice(2),16):parseInt(e.slice(1),10)));
+}
+// The text of an <si> or inline string: its <t> runs, without phonetic hints or empty <t/>.
+function _xmlRunsText(x){
+  return _xmlUnescape(String(x).replace(/<rPh\b[\s\S]*?<\/rPh>/g,"").replace(/<t\b[^>]*\/>/g,"")
+    .split(/<t\b[^>]*>/).slice(1).map(s=>s.split("</t>")[0]).join(""));
+}
+// [{name, rows:[[text,…],…]}], one per sheet in workbook order. Every cell comes back as text.
+async function readXlsxSheets(buf){
+  const f=await _unzipXmlEntries(buf);
+  const wb=f["xl/workbook.xml"];if(!wb)throw new Error("This isn't an Excel workbook.");
+  const rels={};
+  (f["xl/_rels/workbook.xml.rels"]||"").replace(/<Relationship\b[^>]*>/g,t=>{const id=/\bId="([^"]*)"/.exec(t),tg=/\bTarget="([^"]*)"/.exec(t);if(id&&tg)rels[id[1]]=tg[1];return t;});
+  const ss=[];
+  (f["xl/sharedStrings.xml"]||"").replace(/<si>([\s\S]*?)<\/si>/g,(m,si)=>{ss.push(_xmlRunsText(si));return m;});
+  const sheets=[];
+  wb.replace(/<sheet\b[^>]*>/g,t=>{const nm=/\bname="([^"]*)"/.exec(t),rid=/\br:id="([^"]*)"/.exec(t);if(nm&&rid)sheets.push({name:_xmlUnescape(nm[1]),rid:rid[1]});return t;});
+  return sheets.map(s=>{
+    const tg=rels[s.rid]||"";const path=tg.startsWith("/")?tg.slice(1):"xl/"+tg.replace(/^\.\//,"");
+    const rows=[];
+    (f[path]||"").replace(/<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g,(m,ra,body)=>{
+      const rn=/\br="(\d+)"/.exec(ra);if(rn)while(rows.length<parseInt(rn[1],10)-1)rows.push([]);
+      const row=[];
+      (body||"").replace(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g,(m2,ca,cb)=>{
+        const ref=/\br="([A-Z]+)\d+"/.exec(ca),ty=/\bt="([^"]*)"/.exec(ca),v=/<v>([\s\S]*?)<\/v>/.exec(cb||"");
+        let col=row.length;if(ref){col=0;for(const ch of ref[1])col=col*26+ch.charCodeAt(0)-64;col--;}
+        const text=ty&&ty[1]==="s"?(v?ss[parseInt(v[1],10)]||"":""):ty&&ty[1]==="inlineStr"?_xmlRunsText(cb||""):(v?_xmlUnescape(v[1]):"");
+        while(row.length<col)row.push("");row[col]=text;return m2;});
+      rows.push(row);return m;});
+    return {name:s.name,rows};
+  });
+}
+
+// ── Set lists: parse, match, compare ──
+// iSAMS set-list export, one sheet per set: the first cell reads
+// "BUS/13/A - Set List (BUS/13/A) - Title SURNAME (CODE)" (subject, year, block, teacher code);
+// a header row names "Surname" and "Forename (Firstname)"; then one pupil per row; then footer
+// rows starting "Total:" and "Average Age:". Only surname and forename are read. Date of Birth
+// and every other column are never looked at, and nothing here is saved but the match.
+function parseSetListSheets(sheets){
+  const sets=[],problems=[];
+  (sheets||[]).forEach(sh=>{
+    const rows=(sh.rows||[]).map(r=>(r||[]).map(c=>String(c==null?"":c).trim()));
+    const title=((rows.find(r=>r.some(Boolean))||[]).find(Boolean))||"";
+    const m=/^(([A-Za-z0-9]+)\/(\d{1,2})\/([A-Za-z])[A-Za-z0-9]*)\b/.exec(title);
+    if(!m){problems.push({sheet:sh.name,why:"its first cell isn't an iSAMS set-list title"});return;}
+    const hi=rows.findIndex(r=>r.some(c=>/^surname$/i.test(c)));
+    const iS=hi<0?-1:rows[hi].findIndex(c=>/^surname$/i.test(c)),iF=hi<0?-1:rows[hi].findIndex(c=>/^forename/i.test(c));
+    if(iS<0||iF<0){problems.push({sheet:sh.name,why:"no Surname / Forename header row"});return;}
+    const tm=/\(([^()\/]+)\)\s*$/.exec(title);
+    const pupils=[];
+    rows.slice(hi+1).forEach(r=>{
+      if(/^(total|average)\b/i.test(r[0]||""))return;
+      const s=r[iS]||"",f=r[iF]||"";if(!s&&!f)return;
+      const fm=/^(.*?)\s*(?:\(([^()]*)\))?$/.exec(f);
+      pupils.push({surname:s,forename:(fm[1]||"").trim(),alt:(fm[2]||"").trim()});
+    });
+    sets.push({sheet:sh.name,setCode:m[1].toUpperCase(),subjectCode:m[2].toUpperCase(),yg:String(parseInt(m[3],10)),
+      block:m[4].toUpperCase(),teacher:tm?tm[1].trim():"",pupils});
+  });
+  return {sets,problems};
+}
+function _nameKey(s){return String(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^a-z]/g,"");}
+function _pupilYgNum(p){return (String((p&&p.yg)||"").match(/\d+/)||[""])[0];}
+// Match each set-list row to one roster pupil in that year group: same surname, and forename
+// or preferred name equal to either the forename or the bracketed first name. `manual` holds
+// choices made on the review screen for rows that didn't match: "setCode|row index" → email,
+// or "" to leave the row out. A pupil in two sets of one block makes the import unusable.
+function matchSetPupils(parsed,manual){
+  const man=manual||{};
+  const out={members:[],unmatched:[],clashes:[]};
+  const inBlock={};
+  parsed.sets.forEach(st=>{
+    st.pupils.forEach((r,i)=>{
+      const key=st.setCode+"|"+i;
+      let email=null,cands=[];
+      if(Object.prototype.hasOwnProperty.call(man,key)){email=man[key]||null;if(!email)return;}
+      else{
+        const names=[r.forename,r.alt].map(_nameKey).filter(Boolean);
+        cands=pupils.filter(p=>_pupilYgNum(p)===st.yg&&_nameKey(p.surname)===_nameKey(r.surname)
+          &&(names.includes(_nameKey(p.forename))||names.includes(_nameKey(p.pref))));
+        const ems=[...new Set(cands.map(p=>normEmail(p.email)).filter(Boolean))];
+        if(ems.length===1)email=ems[0];
+        else{out.unmatched.push({key,setCode:st.setCode,yg:st.yg,block:st.block,row:r,why:ems.length?"more than one pupil matches":"no pupil on the roster matches",
+          candidates:ems});return;}
+      }
+      const bk=st.yg+"|"+st.block+"|"+email;
+      if(inBlock[bk]&&inBlock[bk]!==st.setCode){out.clashes.push({email,yg:st.yg,block:st.block,sets:[inBlock[bk],st.setCode]});return;}
+      if(inBlock[bk])return;   // listed twice in the same set
+      inBlock[bk]=st.setCode;
+      out.members.push({yg:st.yg,block:st.block,email,setCode:st.setCode});
+    });
+  });
+  return out;
+}
+// What an import changes for each year group it covers: joiners (in a set now, not before, in
+// that block), leavers (the reverse) and moves (a different set in the same block).
+function blockImportDiff(newMembers,oldMembers){
+  const ygs=new Set(newMembers.map(m=>m.yg));
+  const was={},now={};
+  oldMembers.filter(m=>ygs.has(m.yg)).forEach(m=>{was[m.yg+"|"+m.block+"|"+m.email]=m.setCode;});
+  newMembers.forEach(m=>{now[m.yg+"|"+m.block+"|"+m.email]=m.setCode;});
+  const d={joiners:[],leavers:[],moves:[]};
+  Object.keys(now).forEach(k=>{const [yg,block,email]=k.split("|");
+    if(!(k in was))d.joiners.push({yg,block,email,to:now[k]});
+    else if(was[k]!==now[k])d.moves.push({yg,block,email,from:was[k],to:now[k]});});
+  Object.keys(was).forEach(k=>{if(!(k in now)){const [yg,block,email]=k.split("|");d.leavers.push({yg,block,email,from:was[k]});}});
+  return d;
+}
+// Starting choices for the review screen: what was saved last time for the same set (a
+// re-import), else the teacher's code if they are on the LEX roster, else TBC. Never creates
+// staff: a teacher not on the roster is shown, and the lead is left for Gideon to choose.
+function blockImportDefaults(parsed,current){
+  const prevSet={},prevSubj={},prevFree={};
+  (current.sets||[]).forEach(s=>{
+    if(s.set_code===BLOCK_FREE)prevFree[s.yg]=s;
+    else{prevSet[s.set_code]=s;if(s.subject)prevSubj[s.subject_code]=s.subject;}
+  });
+  const sets={},free={};
+  parsed.sets.forEach(st=>{
+    const p=prevSet[st.setCode];
+    sets[st.setCode]={
+      subject:(p&&p.subject)||prevSubj[st.subjectCode]||BLOCK_SUBJECT_NAMES[st.subjectCode]||"",
+      lead:p?p.lead:(staff.some(x=>x.c===st.teacher)?st.teacher:""),
+      venue:p?p.venue:""
+    };
+    if(!free[st.yg]){const f=prevFree[st.yg];free[st.yg]={subject:(f&&f.subject)||"Y"+st.yg+" Supported Study",lead:f?f.lead:"",venue:f?f.venue:""};}
+  });
+  return {sets,free};
+}
+// The rows one import writes: its sets, one "not in a set" row per year group, and members.
+function blockImportRows(parsed,matched,choices,batch){
+  const sets=[],members=[];
+  parsed.sets.forEach(st=>{const c=choices.sets[st.setCode]||{};
+    sets.push({pfx:PFX,yg:st.yg,batch,block:st.block,set_code:st.setCode,subject_code:st.subjectCode,
+      subject:c.subject||st.subjectCode,lead:c.lead||"",venue:c.venue||"",teacher:st.teacher||""});});
+  Object.keys(choices.free).forEach(yg=>{const f=choices.free[yg];
+    sets.push({pfx:PFX,yg,batch,block:"*",set_code:BLOCK_FREE,subject_code:"",subject:f.subject||"Y"+yg+" Supported Study",lead:f.lead||"",venue:f.venue||"",teacher:""});});
+  matched.members.forEach(m=>members.push({pfx:PFX,yg:m.yg,batch,block:m.block,email:m.email,set_code:m.setCode}));
+  return {sets,members};
+}
+// The current import for each year group: the newest batch in lex_block_sets, and only the
+// members written with it (older or unfinished batches are ignored).
+function blockCurrent(setRows,memberRows){
+  const cur={};
+  (setRows||[]).forEach(r=>{if(!cur[r.yg]||r.batch>cur[r.yg])cur[r.yg]=r.batch;});
+  return {batches:cur,
+    sets:(setRows||[]).filter(r=>cur[r.yg]===r.batch),
+    members:(memberRows||[]).filter(r=>cur[r.yg]===r.batch).map(r=>({yg:r.yg,block:r.block,email:normEmail(r.email),setCode:r.set_code}))};
+}
+
+// ── Cloud ──
+let blockData={loaded:false,error:null,batches:{},sets:[],members:[]};
+function _blkHeaders(extra){return Object.assign({"apikey":supaClient.key,"Authorization":"Bearer "+supaClient.key},extra||{});}
+async function _blkGetAll(table,select){
+  const rows=[];const PAGE=1000;
+  for(let off=0;;off+=PAGE){
+    const res=await fetch(`${supaClient.url}/rest/v1/${table}?select=${select}&pfx=eq.${PFX}`,{headers:_blkHeaders({"Accept":"application/json","Range-Unit":"items","Range":off+"-"+(off+PAGE-1)})});
+    if(!res.ok&&res.status!==206){const t=await res.text().catch(()=>"");
+      throw new Error(res.status===404||/42P01|does not exist|schema cache/i.test(t)?"missing":"HTTP "+res.status+" "+t.slice(0,120));}
+    const page=await res.json();rows.push(...page);if(page.length<PAGE)break;
+  }
+  return rows;
+}
+async function blocksLoad(){
+  if(!supaClient){blockData={loaded:false,error:"No cloud connection.",batches:{},sets:[],members:[]};return blockData;}
+  try{
+    const s=await _blkGetAll("lex_block_sets","yg,batch,block,set_code,subject_code,subject,lead,venue,teacher");
+    const m=await _blkGetAll("lex_block_members","yg,batch,block,email,set_code");
+    blockData=Object.assign({loaded:true,error:null},blockCurrent(s,m));
+  }catch(e){blockData={loaded:false,error:e.message==="missing"?"missing":String(e.message||e),batches:{},sets:[],members:[]};}
+  return blockData;
+}
+async function _blkPost(table,rows){
+  for(let i=0;i<rows.length;i+=500){
+    const res=await fetch(`${supaClient.url}/rest/v1/${table}`,{method:"POST",headers:_blkHeaders({"Content-Type":"application/json","Prefer":"resolution=merge-duplicates,return=minimal"}),body:JSON.stringify(rows.slice(i,i+500))});
+    if(!res.ok)throw new Error(table+": HTTP "+res.status+" "+(await res.text().catch(()=>"")).slice(0,160));
+  }
+}
+// Write an import: members, then sets (the switch), then tidy away older batches.
+async function blocksCommit(rows){
+  const ygs=[...new Set(rows.sets.map(r=>r.yg))];const batch=rows.sets[0].batch;
+  await _blkPost("lex_block_members",rows.members);
+  await _blkPost("lex_block_sets",rows.sets);
+  const tidy=[];
+  for(const yg of ygs)for(const t of ["lex_block_members","lex_block_sets"]){
+    const res=await fetch(`${supaClient.url}/rest/v1/${t}?pfx=eq.${PFX}&yg=eq.${encodeURIComponent(yg)}&batch=neq.${encodeURIComponent(batch)}`,{method:"DELETE",headers:_blkHeaders({"Prefer":"return=minimal"})});
+    if(!res.ok)tidy.push(t);
+  }
+  return {tidyFailed:tidy};   // harmless: older batches are ignored when reading
+}
+// Change one set's subject name, lead or venue after import (one row; the current batch).
+async function blockSetUpdate(row,fields){
+  const q=["pfx=eq."+PFX,"yg=eq."+encodeURIComponent(row.yg),"batch=eq."+encodeURIComponent(row.batch),"block=eq."+encodeURIComponent(row.block),"set_code=eq."+encodeURIComponent(row.set_code)].join("&");
+  const res=await fetch(`${supaClient.url}/rest/v1/lex_block_sets?${q}`,{method:"PATCH",headers:_blkHeaders({"Content-Type":"application/json","Prefer":"return=representation"}),
+    body:JSON.stringify(Object.assign({},fields,{updated_at:new Date().toISOString()}))});
+  if(!res.ok)throw new Error("HTTP "+res.status);
+  const back=await res.json();if(!Array.isArray(back)||!back.length)throw new Error("that set has been replaced by a newer import — reload");
+  Object.assign(row,fields);
+}
+
+// ── Settings → Blocks ──
+function _venueSelect(value,onPick,width){
+  const cur=value||"";const names=[...new Set((venues||[]).map(v=>v&&v.name).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  const sel=h("select",{style:{width:width||"150px",color:cur&&!names.includes(cur)?"var(--red)":""},onChange:e=>onPick(e.target.value)});
+  sel.appendChild(h("option",{value:"",selected:!cur},"TBC"));
+  if(cur&&!names.includes(cur))sel.appendChild(h("option",{value:cur,selected:true},cur+" — not a venue"));
+  names.forEach(n=>sel.appendChild(h("option",{value:n,selected:n===cur},n)));
+  return sel;
+}
+function renderAdminBlocks(el){
+  el.appendChild(h("div",{style:{fontWeight:700,fontSize:"15px",marginBottom:"4px"}},"🧱 Blocks — LEX THINK set lists"));
+  el.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text2)",lineHeight:"1.6",marginBottom:"12px"}},
+    "Import the iSAMS set-list export (.xlsx, one sheet per set). Each pupil is matched to the roster by name; you confirm every set's LEX lead and venue before anything is saved. Only names are read from the file — never dates of birth. Pupils' timetables don't use these yet."));
+  const box=h("div",null);el.appendChild(box);
+  if(window._blkReview){_renderBlockReview(box,window._blkReview);return;}
+  box.appendChild(h("div",{style:{fontSize:"12px",color:"var(--text3)"}},"Loading…"));
+  blocksLoad().then(()=>{if(!document.body.contains(box))return;box.innerHTML="";_renderBlockState(box);});
+}
+function _blockPupilName(email){const p=findPupilByEmail(email);return p?((p.pref||p.forename||"")+" "+(p.surname||"")).trim():email;}
+function _renderBlockState(box){
+  if(blockData.error==="missing"){
+    const c=h("div",{className:"card card-pad mb-12"});box.appendChild(c);
+    c.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"6px"}},"One-off setup: the block tables don't exist yet"));
+    c.appendChild(h("div",{style:{fontSize:"12px",color:"var(--text2)",marginBottom:"8px",lineHeight:1.5}},"Copy this, paste it into Supabase → SQL Editor for this project, press Run, then come back and press Check again."));
+    c.appendChild(h("textarea",{readonly:"",style:{width:"100%",height:"160px",fontFamily:"var(--mono)",fontSize:"10px"}},BLOCK_SETUP_SQL));
+    c.appendChild(h("div",{className:"flex",style:{gap:"8px",marginTop:"8px"}},
+      h("button",{className:"btn btn-ghost btn-sm",onClick:()=>{try{navigator.clipboard.writeText(BLOCK_SETUP_SQL);toast("SQL copied");}catch(_){}}},"Copy SQL"),
+      h("button",{className:"btn btn-primary btn-sm",onClick:()=>rebuildAdminPreserveScroll()},"Check again")));
+    return;
+  }
+  if(blockData.error){box.appendChild(h("div",{className:"alert alert-info"},"Couldn't load the set lists: "+blockData.error));return;}
+  // Import
+  const imp=h("div",{className:"card card-pad mb-12"});box.appendChild(imp);
+  const file=h("input",{type:"file",accept:".xlsx",style:{fontSize:"12px"}});
+  const msg=h("span",{style:{fontSize:"12px",color:"var(--text3)",marginLeft:"8px"}});
+  file.addEventListener("change",async()=>{
+    const f=file.files&&file.files[0];if(!f)return;
+    msg.textContent="Reading "+f.name+"…";
+    try{
+      const parsed=parseSetListSheets(await readXlsxSheets(await f.arrayBuffer()));
+      if(!parsed.sets.length){msg.textContent="No set lists found in "+f.name+(parsed.problems.length?" ("+parsed.problems[0].why+")":"")+".";return;}
+      window._blkReview={file:f.name,parsed,manual:{},choices:blockImportDefaults(parsed,blockData)};
+      rebuildAdminPreserveScroll();
+    }catch(e){msg.textContent=String(e.message||e);}
+  });
+  imp.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"6px"}},"Import set lists"));
+  imp.appendChild(h("div",{style:{display:"flex",alignItems:"center",flexWrap:"wrap"}},file,msg));
+  // Current
+  const ygs=Object.keys(blockData.batches).sort((a,b)=>b-a);
+  if(!ygs.length){box.appendChild(h("div",{style:{fontSize:"12px",color:"var(--text3)"}},"No set lists imported yet."));return;}
+  ygs.forEach(yg=>{
+    const card=h("div",{className:"card card-pad mb-12"});box.appendChild(card);
+    const sets=blockData.sets.filter(s=>s.yg===yg&&s.set_code!==BLOCK_FREE).sort((a,b)=>a.block.localeCompare(b.block)||a.set_code.localeCompare(b.set_code));
+    const mem=blockData.members.filter(m=>m.yg===yg);
+    const b=blockData.batches[yg];
+    card.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"6px"}},"Year "+yg+" — "+sets.length+" sets, "+new Set(mem.map(m=>m.email)).size+" pupils",
+      h("span",{style:{fontWeight:400,fontSize:"11px",color:"var(--text3)",marginLeft:"8px"}},"imported "+new Date(b).toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}))));
+    const save=(row,fields,ctl)=>blockSetUpdate(row,fields).then(()=>toast("Saved")).catch(e=>{toast("Not saved — "+e.message,"err");if(ctl)ctl.style.outline="2px solid var(--red)";});
+    const tbl=h("table",{style:{fontSize:"12px"}});card.appendChild(tbl);
+    tbl.appendChild(h("thead",null,h("tr",null,...["Block","Set","Subject","iSAMS teacher","LEX lead","Venue","Pupils"].map(x=>h("th",null,x)))));
+    const tb=h("tbody",null);tbl.appendChild(tb);
+    sets.forEach(s=>{
+      const who=mem.filter(m=>m.setCode===s.set_code);
+      const subj=h("input",{value:s.subject,style:{width:"150px"},onChange:e=>save(s,{subject:e.target.value.trim()},e.target)});
+      tb.appendChild(h("tr",null,h("td",null,s.block),h("td",null,s.set_code),h("td",null,subj),
+        h("td",null,s.teacher+(s.teacher&&!staff.some(x=>x.c===s.teacher)?" (not on roster)":"")),
+        h("td",null,_staffCodeSelect(s.lead,v=>save(s,{lead:v}),"130px")),h("td",null,_venueSelect(s.venue,v=>save(s,{venue:v}))),
+        h("td",{title:who.map(m=>_blockPupilName(m.email)).sort().join(", ")},String(who.length))));
+    });
+    const fr=blockData.sets.find(s=>s.yg===yg&&s.set_code===BLOCK_FREE);
+    if(fr){
+      const inSome={};mem.forEach(m=>{(inSome[m.block]=inSome[m.block]||new Set()).add(m.email);});
+      const ygPupils=pupils.filter(p=>_pupilYgNum(p)===yg).map(p=>normEmail(p.email));
+      const freeTxt=[...new Set(sets.map(s=>s.block))].sort().map(bl=>bl+" "+ygPupils.filter(e=>!(inSome[bl]&&inSome[bl].has(e))).length).join(" · ");
+      tb.appendChild(h("tr",{style:{background:"var(--surface2)"}},h("td",null,"—"),h("td",null,"Not in a set"),
+        h("td",null,h("input",{value:fr.subject,style:{width:"150px"},onChange:e=>save(fr,{subject:e.target.value.trim()},e.target)})),h("td",null,""),
+        h("td",null,_staffCodeSelect(fr.lead,v=>save(fr,{lead:v}),"130px")),h("td",null,_venueSelect(fr.venue,v=>save(fr,{venue:v}))),
+        h("td",{title:"Year "+yg+" pupils on the roster with no set in each block"},freeTxt)));
+    }
+  });
+}
+function _renderBlockReview(box,R){
+  const matched=matchSetPupils(R.parsed,R.manual);
+  const diff=blockImportDiff(matched.members,blockData.members||[]);
+  const ygs=[...new Set(R.parsed.sets.map(s=>s.yg))].sort();
+  const blocks=[...new Set(R.parsed.sets.map(s=>s.block))].sort();
+  const card=h("div",{className:"card card-pad mb-12"});box.appendChild(card);
+  card.appendChild(h("div",{style:{fontWeight:700,fontSize:"14px",marginBottom:"4px"}},"Review: "+R.file));
+  card.appendChild(h("div",{style:{fontSize:"12px",color:"var(--text2)",marginBottom:"10px"}},
+    R.parsed.sets.length+" sets ("+blocks.map(bl=>bl+" "+R.parsed.sets.filter(s=>s.block===bl).length).join(" · ")+") for Year "+ygs.join(", ")+" · "+
+    new Set(matched.members.map(m=>m.email)).size+" pupils matched · "+matched.unmatched.length+" to sort out · nothing is saved until you press Import."));
+  const redraw=()=>rebuildAdminPreserveScroll();
+  if(R.parsed.problems.length)card.appendChild(h("div",{className:"alert alert-info",style:{marginBottom:"8px"}},"Sheets skipped: "+R.parsed.problems.map(p=>"‘"+p.sheet+"’ ("+p.why+")").join("; ")));
+  if(matched.clashes.length){
+    card.appendChild(h("div",{style:{color:"var(--red)",fontWeight:600,fontSize:"12px",margin:"6px 0"}},"A pupil can't be in two sets in one block — fix these in iSAMS and export again:"));
+    matched.clashes.forEach(c=>card.appendChild(h("div",{style:{fontSize:"12px"}},"• "+_blockPupilName(c.email)+" — Block "+c.block+": "+c.sets.join(" and "))));
+  }
+  if(matched.unmatched.length){
+    card.appendChild(h("div",{style:{fontWeight:600,fontSize:"12px",margin:"8px 0 4px"}},"Names that didn't match one pupil — choose who they are, or leave them out"));
+    matched.unmatched.forEach(u=>{
+      const pool=(u.candidates.length?pupils.filter(p=>u.candidates.includes(normEmail(p.email))):pupils.filter(p=>_pupilYgNum(p)===u.yg))
+        .slice().sort((a,b)=>(a.surname||"").localeCompare(b.surname||""));
+      const sel=h("select",{onChange:e=>{if(e.target.value==="?")delete R.manual[u.key];else R.manual[u.key]=e.target.value;redraw();}});
+      sel.appendChild(h("option",{value:"?",selected:true},"— choose —"));
+      sel.appendChild(h("option",{value:""},"leave out"));
+      pool.forEach(p=>sel.appendChild(h("option",{value:normEmail(p.email)},(p.surname||"")+", "+(p.pref||p.forename||"")+" ("+(p.yg||"")+")")));
+      card.appendChild(h("div",{style:{fontSize:"12px",margin:"2px 0"}},u.setCode+": "+u.row.surname+", "+u.row.forename+(u.row.alt?" ("+u.row.alt+")":"")+" — "+u.why+" ",sel));
+    });
+  }
+  const left=Object.values(R.manual).filter(v=>v==="").length;
+  if(left)card.appendChild(h("div",{style:{fontSize:"11px",color:"var(--text3)"}},left+" row(s) left out by you."));
+  // Sets and their LEX lead / venue
+  const tbl=h("table",{style:{fontSize:"12px",marginTop:"10px"}});card.appendChild(tbl);
+  tbl.appendChild(h("thead",null,h("tr",null,...["Block","Set","Subject","iSAMS teacher","LEX lead","Venue","Pupils"].map(x=>h("th",null,x)))));
+  const tb=h("tbody",null);tbl.appendChild(tb);
+  R.parsed.sets.slice().sort((a,b)=>a.block.localeCompare(b.block)||a.setCode.localeCompare(b.setCode)).forEach(st=>{
+    const c=R.choices.sets[st.setCode];const onRoster=staff.some(x=>x.c===st.teacher);
+    tb.appendChild(h("tr",null,h("td",null,st.block),h("td",null,st.setCode),
+      h("td",null,h("input",{value:c.subject,placeholder:"name for "+st.subjectCode,style:{width:"150px",borderColor:c.subject?"":"var(--red)"},onInput:e=>{c.subject=e.target.value.trim();}})),
+      h("td",{style:{color:onRoster?"":"var(--amber)"}},st.teacher+(onRoster?"":" — not on LEX roster")),
+      h("td",null,_staffCodeSelect(c.lead,v=>{c.lead=v;},"130px")),h("td",null,_venueSelect(c.venue,v=>{c.venue=v;})),
+      h("td",null,String(matched.members.filter(m=>m.setCode===st.setCode).length)+" / "+st.pupils.length)));
+  });
+  ygs.forEach(yg=>{const f=R.choices.free[yg];
+    tb.appendChild(h("tr",{style:{background:"var(--surface2)"}},h("td",null,"—"),h("td",null,"Not in a set (Y"+yg+")"),
+      h("td",null,h("input",{value:f.subject,style:{width:"150px"},onInput:e=>{f.subject=e.target.value.trim();}})),h("td",null,""),
+      h("td",null,_staffCodeSelect(f.lead,v=>{f.lead=v;},"130px")),h("td",null,_venueSelect(f.venue,v=>{f.venue=v;})),h("td",null,"")));});
+  // What changes
+  const hadBefore=ygs.some(yg=>blockData.batches[yg]);
+  if(hadBefore){
+    const lines=[["Join a set",diff.joiners.map(d=>_blockPupilName(d.email)+" → "+d.to)],["Change set",diff.moves.map(d=>_blockPupilName(d.email)+": "+d.from+" → "+d.to)],
+      ["Leave a set",diff.leavers.map(d=>_blockPupilName(d.email)+" (was "+d.from+")")]];
+    card.appendChild(h("div",{style:{fontWeight:600,fontSize:"12px",margin:"12px 0 4px"}},"Compared with the current import"));
+    lines.forEach(([t,l])=>card.appendChild(h("div",{style:{fontSize:"12px",margin:"2px 0"}},h("b",null,t+" ("+l.length+"): "),l.length?l.join(" · "):"none")));
+  }
+  const status=h("span",{style:{fontSize:"12px",marginLeft:"8px"}});
+  const go=h("button",{className:"btn btn-primary btn-sm",disabled:!!matched.clashes.length||!!matched.unmatched.length,onClick:async()=>{
+    if(R.parsed.sets.some(st=>!R.choices.sets[st.setCode].subject)){toast("Every set needs a subject name","err");return;}
+    go.disabled=true;status.textContent="Saving…";
+    try{
+      const rows=blockImportRows(R.parsed,matched,R.choices,new Date().toISOString());
+      const r=await blocksCommit(rows);
+      logAction("BLOCKS_IMPORT","Year "+ygs.join(", ")+": "+R.parsed.sets.length+" sets, "+new Set(matched.members.map(m=>m.email)).size+" pupils from "+R.file+
+        (hadBefore?" ("+diff.joiners.length+" joined, "+diff.moves.length+" moved, "+diff.leavers.length+" left)":""));
+      window._blkReview=null;toast("Set lists imported"+(r.tidyFailed.length?" (older copies not tidied — harmless)":""));
+      rebuildAdminPreserveScroll();
+    }catch(e){go.disabled=false;status.textContent="Not saved: "+(e.message||e)+". The previous import is still in force.";status.style.color="var(--red)";}
+  }},"Import "+R.parsed.sets.length+" sets");
+  const why=matched.clashes.length?"Fix the clashes first.":matched.unmatched.length?"Choose or leave out every unmatched name first.":"";
+  card.appendChild(h("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginTop:"12px",flexWrap:"wrap"}},go,
+    h("button",{className:"btn btn-ghost btn-sm",onClick:()=>{window._blkReview=null;redraw();}},"Cancel"),status,
+    why?h("span",{style:{fontSize:"12px",color:"var(--amber)"}},why):null));
 }
 const FB_SETUP_SQL=`-- LEX pupil feedback (v159). Run once in the Supabase SQL editor for this project.
 create table if not exists public.lex_feedback (
