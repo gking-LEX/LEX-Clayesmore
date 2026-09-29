@@ -965,7 +965,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v172';
+const CURRENT_VERSION = 'v173';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -15348,8 +15348,21 @@ function blockSessionSets(act,sess){
   const yg=act.blocks.yg;
   const sets=(blockData.sets||[]).filter(s=>s.yg===yg&&s.block===b&&s.set_code!==BLOCK_FREE).sort((x,y)=>(x.subject||"").localeCompare(y.subject||""));
   const f=_blockFreeRow(yg,b);
-  return f?sets.concat([Object.assign({},f,{block:b})]):sets;
+  // v173: copies, each with the support staff Gideon has linked to it for this activity.
+  return (f?sets.concat([Object.assign({},f,{block:b})]):sets).map(s=>Object.assign({},s,{support:blockSupportFor(act,sess,s.set_code)}));
 }
+// v173: support staff are linked to a set on the switched activity, per session:
+// a.blocks.support = {"A|HRL":"__FREE__"}. Without it they saw no class at all (29 Sept: two
+// support staff on a Y13 session saw only "Y13 LEX THINK A", not the group they were with).
+function blockSupportFor(act,sess,setCode){
+  const sp=(act&&act.blocks&&act.blocks.support)||{};
+  return Object.keys(sp).filter(k=>k.split("|")[0]===sess&&sp[k]===setCode).map(k=>k.split("|").slice(1).join("|"));
+}
+// A block activity whose set lists are loaded: it has set registers, so its whole-session
+// register isn't offered to staff (marking there as well as on a set was double registration).
+function _blockLive(act){return !!(act&&act.blocks)&&_blockSessionsOf(act).some(({sess})=>blockSessionSets(act,sess||"A").length>0);}
+// The option value of one set's register in the Staff Portal.
+function _blockSetOption(act,sess,comp,block,setCode){return "set:"+[act.blocks.yg,block,setCode,sess||"AB",comp].join("|");}
 // Is this pupil in the set — or, for Supported Study, in no set of that block?
 function blockSetHas(yg,block,setCode,email){
   const got=_blockMemberIndex().get(yg+"|"+block+"|"+normEmail(email));
@@ -15367,7 +15380,8 @@ function blockPupilSetsText(act,email,di){
 function blockStaffLines(code,name,di,sess){
   const a=acts.find(x=>x.blocks&&(x.di||[]).includes(di)&&(sess?(sess==="A"?x.sessA:x.sessB)===name:x.n===name));
   if(!a)return [];
-  return blockSessionSets(a,sess||"A").filter(s=>s.lead===code).map(s=>"Block "+s.block+" · "+s.subject+(s.venue?" · "+s.venue:""));
+  return blockSessionSets(a,sess||"A").filter(s=>s.lead===code||(s.support||[]).includes(code))
+    .map(s=>(s.lead===code?"":"Supporting · ")+"Block "+s.block+" · "+s.subject+(s.venue?" · "+s.venue:""));
 }
 // The Friday notice's lines for a block activity: each session's sets with room and lead.
 function blockNoticeLines(act){
@@ -15517,6 +15531,27 @@ function _renderBlockTimetable(box){
       if(a.blocks){
         row.appendChild(h("div",{style:{fontSize:"12px",color:"var(--green)",margin:"4px 0"}},"✓ Block timetable: "+
           _blockSessionsOf(a).map(({sess})=>sessLabel(sess)+" Block "+a.blocks[sess||"A"]).join(" · ")));
+        // v173: staff on the session who don't lead a set — choose the set each one supports.
+        _blockSessionsOf(a).forEach(({sess,comp})=>{
+          const S=sess||"A",sets=blockSessionSets(a,S),leads=new Set(sets.map(s=>s.lead).filter(Boolean));
+          const codes=[...new Set((a.di||[]).filter(di=>dates[di]&&!_diHasHappened(di,today)).flatMap(di=>saKeysForDate(di)
+            .filter(k=>{const ks=k.split("|")[2]||"";return (!sess||!ks||ks===sess)&&saGet(k)===comp;}).map(saCode)))].filter(c=>!leads.has(c)).sort();
+          if(!codes.length)return;
+          const line=h("div",{style:{fontSize:"12px",margin:"4px 0",display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap"}},
+            h("span",{style:{color:"var(--text2)"}},sessLabel(sess)+" support:"));
+          codes.forEach(code=>{
+            const key=S+"|"+code,cur=((a.blocks.support||{})[key])||"";const st=staff.find(x=>x.c===code);
+            const sel=h("select",{onChange:e=>{const sp=Object.assign({},a.blocks.support||{});
+              if(e.target.value)sp[key]=e.target.value;else delete sp[key];
+              a.blocks=Object.assign({},a.blocks,{support:sp});
+              logAction("BLOCKS_SUPPORT",a.n+" "+sessLabel(sess)+": "+code+" → "+(e.target.value?(sets.find(s=>s.set_code===e.target.value)||{}).subject||e.target.value:"no set"));
+              saveAll();toast("Saved");}});
+            sel.appendChild(h("option",{value:"",selected:!cur},"— no set —"));
+            sets.forEach(s=>sel.appendChild(h("option",{value:s.set_code,selected:cur===s.set_code},s.subject+(s.set_code===BLOCK_FREE?"":" ("+s.set_code+")"))));
+            line.appendChild(h("span",null,(st?st.n:code)+" ",sel));
+          });
+          row.appendChild(line);
+        });
         row.appendChild(h("button",{className:"btn btn-ghost btn-xs",onClick:()=>{
           if(!confirm("Switch "+a.n+" back? The staff calendar changes made by the switch are undone (unless changed since), and pupils see the activity as before."))return;
           const r=undoBlockSwitch(a);
@@ -15565,7 +15600,7 @@ function _renderBlockSwitchPreview(el,a,plan){
     items.forEach(t=>box.appendChild(h("div",{style:{marginLeft:"10px",color:colour||""}},t)));};
   const sl=(di,sess)=>dl(di)+(sess?" P"+(sess==="A"?"1":"4"):"");
   list("Staff calendar: set leads put on",plan.add.map(x=>sl(x.di,x.sess)+": "+nm(x.code)+" — "+x.subjects.join(" + ")));
-  list("Also on the session but not leading a set — they stay on as support",plan.remove.map(x=>sl(x.di,x.sess)+": "+nm(x.code)));
+  list("Also on the session but not leading a set — they stay on as support (after switching, choose the set each one supports)",plan.remove.map(x=>sl(x.di,x.sess)+": "+nm(x.code)));
   const off=h("input",{type:"checkbox"});
   if(plan.remove.length)box.appendChild(h("label",{style:{display:"block",marginLeft:"10px"}},off," Take them off the staff calendar instead"));
   list("Clashes — already down for something else, left as they are",plan.clashes.map(x=>sl(x.di,x.sess)+": "+nm(x.code)+" leads "+x.subjects.join(" + ")+" but is on "+x.onto),"var(--red)");
@@ -16360,7 +16395,11 @@ function renderStaffView(){
             // Jump to the register they belong on. Component registers are listed under
             // their own option value, so try the plain pairing first and fall back.
             const opts=[...actSel.options].map(o=>o.value);
-            const target=opts.includes(eff)?eff:opts.find(v=>v.startsWith("comp:")&&v.split(":")[1]===eff);
+            // v173: on a block activity, their own set's register (P1 first).
+            const ea=findActByName_exact(eff);
+            const setVals=_blockLive(ea)?_blockSessionsOf(ea).map(({sess,comp})=>{const d2=blockDetailFor(ne,di,sess||"A",ea);
+              return d2?_blockSetOption(ea,sess,comp,d2.block,d2.setCode):null;}).filter(Boolean):[];
+            const target=setVals.find(v=>opts.includes(v))||(opts.includes(eff)?eff:opts.find(v=>v.startsWith("comp:")&&v.split(":")[1]===eff));
             if(!target){toast("No register for "+eff+" on this date","err");return;}
             actSel.value=target;updateRosterView();
             const rd=document.getElementById("staff-roster-view");
@@ -16394,7 +16433,17 @@ const ctrlRow=h("div",{className:"flex mb-12",style:{gap:"8px",flexWrap:"wrap"}}
       // Build component list grouped by session
       const dateActs=acts.filter(a=>a.di.includes(di));
       const compA=new Set();const compB=new Set();const compAB=new Set();
+      // v173: the signed-in member of staff's own set registers (led or supported) come first.
+      const me=_lexUserAcro(),mine=[];
+      dateActs.filter(_blockLive).forEach(a=>_blockSessionsOf(a).forEach(({sess,comp})=>blockSessionSets(a,sess||"A").forEach(st=>{
+        if(me&&(st.lead===me||(st.support||[]).includes(me)))mine.push({v:_blockSetOption(a,sess,comp,st.block,st.set_code),
+          l:(sess?"P"+(sess==="A"?"1":"4")+" ":"")+"Block "+st.block+" · "+st.subject+(st.venue?" · "+st.venue:"")+(st.lead===me?"":" (supporting)")});})));
+      if(mine.length){
+        actSel.appendChild(h("option",{disabled:true,style:{fontWeight:700}},"── Your registers ──"));
+        mine.forEach(m=>actSel.appendChild(h("option",{value:m.v},m.l)));
+      }
       dateActs.forEach(a=>{
+        if(_blockLive(a))return; // v173: block activities have set registers only (below)
         if(isSplitAct(a)){compA.add(a.sessA);compB.add(a.sessB);}
         else{compAB.add(a.n);}
       });
@@ -16409,11 +16458,11 @@ const ctrlRow=h("div",{className:"flex mb-12",style:{gap:"8px",flexWrap:"wrap"}}
         [...compB].sort().forEach(c=>actSel.appendChild(h("option",{value:"comp:"+c+":B"},c+" (B)")));
       }
       // v172: block timetables — a register per set per session (the component register, filtered)
-      dateActs.filter(a=>a.blocks).forEach(a=>_blockSessionsOf(a).forEach(({sess,comp})=>{
+      dateActs.filter(_blockLive).forEach(a=>_blockSessionsOf(a).forEach(({sess,comp})=>{
         const S=sess||"A",sets=blockSessionSets(a,S);if(!sets.length)return;
         actSel.appendChild(h("option",{disabled:true,style:{fontWeight:700}},"── "+a.n+(sess?" · P"+(sess==="A"?"1":"4"):"")+" · Block "+actBlockFor(a,S)+" sets ──"));
         sets.forEach(st=>{const ld=staff.find(x=>x.c===st.lead);
-          actSel.appendChild(h("option",{value:"set:"+[a.blocks.yg,actBlockFor(a,S),st.set_code,sess||"AB",comp].join("|")},
+          actSel.appendChild(h("option",{value:_blockSetOption(a,sess,comp,st.block,st.set_code)},
             st.subject+(st.venue?" · "+st.venue:"")+" ("+(ld?ld.n:(st.lead||"lead TBC"))+")"));});
       }));
       // Standard A+B activities
@@ -16427,7 +16476,7 @@ const ctrlRow=h("div",{className:"flex mb-12",style:{gap:"8px",flexWrap:"wrap"}}
       Object.values(allocOverrides[dateHalf2.toLowerCase()]||{}).forEach(v=>{if(v&&v!=="__UNASSIGNED__")ovrSet.add(v);});
       // Only add override acts not already listed
       const allListed=new Set([...compA,...compB,...compAB]);
-      const extra=[...ovrSet].filter(n=>!allListed.has(n)).sort();
+      const extra=[...ovrSet].filter(n=>!allListed.has(n)&&!_blockLive(findActByName_exact(n))).sort(); // v173: not a block activity's whole register
       if(extra.length>0){
         actSel.appendChild(h("option",{disabled:true,style:{fontWeight:700}},"── Other ──"));
         extra.forEach(n=>actSel.appendChild(h("option",{value:n},n)));

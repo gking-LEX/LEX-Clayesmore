@@ -1877,6 +1877,9 @@ var USE_SRC = [
   grab("function _blockFreeRow(", "\r\n}", "_blockFreeRow"),
   grab("function blockDetailFor(", "\r\n}", "blockDetailFor"),
   grab("function blockSessionSets(", "\r\n}", "blockSessionSets"),
+  grab("function blockSupportFor(", "\r\n}", "blockSupportFor"),
+  grab("function _blockLive(", "\r\n", "_blockLive"),
+  grab("function _blockSetOption(", "\r\n", "_blockSetOption"),
   grab("function blockSetHas(", "\r\n}", "blockSetHas"),
   grab("function _blockSessionsOf(", "\r\n", "_blockSessionsOf"),
   grab("function blockPupilSetsText(", "\r\n}", "blockPupilSetsText"),
@@ -1897,7 +1900,7 @@ var USE = w => new Function("W", `
   function buildEngMap(){return {};}
   ${USE_SRC}
   return {actBlockFor,blockDetailFor,blockSessionSets,blockSetHas,blockPupilSetsText,blockStaffLines,blockNoticeLines,blockSwitchPlan,
-    applyBlockSwitch,undoBlockSwitch,parseLeadsVenuesSheets,applyLeadsVenues,_blockGuessMapping,actSessions,parseSetListSheets,
+    applyBlockSwitch,undoBlockSwitch,parseLeadsVenuesSheets,applyLeadsVenues,_blockGuessMapping,actSessions,parseSetListSheets,_blockLive,_blockSetOption,
     get sa(){return sa;},get acts(){return acts;},setBlockData(v){blockData=v;}};`)(w);
 function blockUseTests() {
   S("v172 — Block timetable in use (resolver, registers, switch)");
@@ -1999,7 +2002,26 @@ function blockUseTests() {
   t("the Friday notice lists sets", has("const _bl=blockNoticeLines(act);"));
   t("the parent-letter export adds each pupil's sets", has("blockPupilSetsText(findActByName_exact(n),r.ne,di)"));
   t("the Staff Portal offers a register per set and filters it",
-    has('value:"set:"+[a.blocks.yg,actBlockFor(a,S),st.set_code,sess||"AB",comp].join("|")') && has("blockSetHas(blkSet.yg,blkSet.block,blkSet.setCode,p.email)"));
+    has("value:_blockSetOption(a,sess,comp,st.block,st.set_code)") && has("blockSetHas(blkSet.yg,blkSet.block,blkSet.setCode,p.email)"));
+  // v173: support staff and single registration
+  const sup = Object.assign(split(), { blocks: { yg: "13", A: "A", B: "B", support: { "A|OLD": "__FREE__", "B|NEW1": "BUS/13/B" } } });
+  const W3 = USE({ acts: [sup], staff, venues, dates, blockData: bd });
+  t("a support person linked to a set is listed on it, in that session only",
+    JSON.stringify(W3.blockSessionSets(sup, "A").find(s => s.set_code === "__FREE__").support) === '["OLD"]'
+    && !W3.blockSessionSets(sup, "A").some(s => s.set_code !== "__FREE__" && s.support.length)
+    && JSON.stringify(W3.blockSessionSets(sup, "B").find(s => s.set_code === "BUS/13/B").support) === '["NEW1"]');
+  t("…and their schedule shows the class they support", JSON.stringify(W3.blockStaffLines("OLD", "LT A", 1, "A")) === '["Supporting · Block A · Y13 Supported Study · Foyer"]');
+  t("…but not in the other session", W3.blockStaffLines("OLD", "LT B", 1, "B").length === 0);
+  t("support links don't change the sets themselves", !("support" in bd.sets[0]));
+  t("a switched activity with set lists loaded has set registers only", W3._blockLive(sup) && !W3._blockLive(split())
+    && !W3._blockLive(Object.assign(split(), { blocks: { yg: "11", A: "A", B: "B" } })));
+  t("a set register's option names year, block, set, session and session name", W3._blockSetOption(sup, "A", "LT A", "A", "PSY/13/A") === "set:13|A|PSY/13/A|A|LT A"
+    && W3._blockSetOption(sup, "", "LT", "C", "X/13/C") === "set:13|C|X/13/C|AB|LT");
+  t("the Staff Portal doesn't offer a block activity's whole-session register (double registration)",
+    has("if(_blockLive(a))return; // v173") && has("&&!_blockLive(findActByName_exact(n))"));
+  t("…lists the signed-in person's own set registers first", has('"── Your registers ──"'));
+  t("…and 'find a pupil' opens their set register", has("const target=setVals.find(v=>opts.includes(v))||"));
+  t("support staff are linked to a set on the Blocks screen", has('logAction("BLOCKS_SUPPORT",'));
   t("…and a lead's schedule shows their set", has("blockStaffLines(s.c,n,rowDi,rowSess)"));
   t("the admin register shows each pupil's sets", has('if(act&&act.blocks)hdrCols.push("Sets");'));
   t("staff on the session who don't lead a set stay on unless Gideon ticks the box", has("const p2=off.checked?plan:Object.assign({},plan,{remove:[]});")
