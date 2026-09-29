@@ -1511,12 +1511,16 @@ var CHK_SRC = [
   grab("const SPECIAL_ALLOCS=", "\r\n", "SPECIAL_ALLOCS"),
   grab("const STAFF_DESIGNATIONS=[", "\r\n];", "STAFF_DESIGNATIONS"),
   grab("function normaliseActs(){", "\r\n}", "normaliseActs"),
+  grab("const BLOCK_FREE=", "\r\n", "BLOCK_FREE"),
+  grab("let _blkIdx=null", "\r\n", "_blkIdx"),
+  grab("function _blockMemberIndex(", "\r\n}", "_blockMemberIndex"),
+  grab("function _blockFreeRow(", "\r\n}", "_blockFreeRow"),
   grab("function allocUpcomingChecks(", "\r\n}", "allocUpcomingChecks")
 ].join("\n");
 var CHK = w => new Function("W", `
   let acts=W.acts,pupils=W.pupils||[],dates=W.dates,formData=W.fd||[],allocOverrides=W.ao||{},
       allocDateOverrides=W.ado||{},allocRes=W.res||[],staff=W.staff||[],sa=W.sa||{};
-  let _pupilCache=null,_actCache=null,_engMapCache=null;
+  let _pupilCache=null,_actCache=null,_engMapCache=null,blockData=W.blockData||{batches:{},sets:[],members:[]};
   ${CHK_SRC}
   let designations=W.designations||STAFF_DESIGNATIONS.map(d=>({n:d.n,counted:d.counted!==false}));
   normaliseActs();   // as the app does on load: unset session leads take the lead
@@ -2026,6 +2030,48 @@ function blockUseTests() {
   t("the admin register shows each pupil's sets", has('if(act&&act.blocks)hdrCols.push("Sets");'));
   t("staff on the session who don't lead a set stay on unless Gideon ticks the box", has("const p2=off.checked?plan:Object.assign({},plan,{remove:[]});")
     && has("applyBlockSwitch(a,p2);"));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+S("v174 — Set lists in the backup; block-timetable gaps before each Saturday");
+{
+  // Invented data only.
+  const BK_SRC = [grab("function normEmail(", "\r\n", "normEmail"), grab("function blockCurrent(", "\r\n}", "blockCurrent"),
+    grab("function blockBackupPayload(", "\r\n}", "blockBackupPayload"), grab("function blockRestoreRows(", "\r\n}", "blockRestoreRows")].join("\n");
+  const RT = bd => new Function("BD", `const PFX="lex12";let blockData=BD;${BK_SRC}\nreturn {blockCurrent,blockBackupPayload,blockRestoreRows};`)(bd);
+  const bd = { batches: { "13": "2026-09-29T10:00:00Z", "11": "2026-09-29T11:00:00Z" }, sets: [
+    { yg: "13", batch: "2026-09-29T10:00:00Z", block: "A", set_code: "PSY/13/A", subject_code: "PSY", subject: "Psychology", lead: "TCH", venue: "PY01", teacher: "TCH" },
+    { yg: "13", batch: "2026-09-29T10:00:00Z", block: "A", set_code: "__FREE__", subject_code: "", subject: "Y13 Supported Study", lead: "FRL", venue: "Foyer", teacher: "" },
+    { yg: "11", batch: "2026-09-29T11:00:00Z", block: "B", set_code: "HIS/11/B", subject_code: "HIS", subject: "History", lead: "OTH", venue: "Hi01", teacher: "OTH" }],
+    members: [{ yg: "13", block: "A", email: "ada@x.com", setCode: "PSY/13/A" }, { yg: "11", block: "B", email: "eve@x.com", setCode: "HIS/11/B" }] };
+  const R1 = RT(bd);
+  const saved = JSON.parse(JSON.stringify({ blocks: R1.blockBackupPayload() })).blocks;   // through the file
+  const rows = R1.blockRestoreRows(saved, "2026-10-01T09:00:00Z");
+  const back = R1.blockCurrent(rows.sets, rows.members);
+  const key = s => [s.yg, s.block, s.set_code, s.subject, s.lead, s.venue, s.teacher].join("|");
+  t("backup round-trip keeps every set, its subject, lead, room and teacher", JSON.stringify(back.sets.map(key).sort()) === JSON.stringify(bd.sets.map(key).sort()));
+  t("…and every pupil's set", JSON.stringify(back.members.map(m => m.yg + m.block + m.email + m.setCode).sort()) === JSON.stringify(bd.members.map(m => m.yg + m.block + m.email + m.setCode).sort()));
+  t("…restored as one new batch per year group (so it switches in one step)", back.batches["13"] === "2026-10-01T09:00:00Z" && back.batches["11"] === "2026-10-01T09:00:00Z"
+    && rows.sets.concat(rows.members).every(r => r.pfx === "lex12"));
+  t("a backup without set lists restores nothing: the current ones are kept", R1.blockRestoreRows(undefined, "x") === null && R1.blockRestoreRows({ sets: [] }, "x") === null);
+  t("the backup includes the set lists, refreshed first", has("blocks:blockBackupPayload() // v174") && has("try{await blocksLoad();}catch(_){} // v174"));
+  t("restore writes them back only when the backup has them", has("const _br=blockRestoreRows(data.blocks,new Date().toISOString());") && has("if(_br&&!supaClient){") && has("else if(_br){"));
+  // Before each Saturday: block-timetable gaps
+  const dates = [{ full: "03/10/2026", half: "A1" }, { full: "10/10/2026", half: "A1" }];
+  const acts = [{ n: "LT A then B", di: [0], sess: "A+B", sessA: "LT A", sessB: "LT B", cap: 50, blocks: { yg: "13", A: "A", B: "B" } },
+    { n: "Y11 Day", di: [1], sess: "A+B", sessA: "Y11 Day", sessB: "Y11 Day", cap: 50, blocks: { yg: "11", A: "C", B: "C" } }];
+  const pupils = [{ email: "ada@x.com", yg: "Year 13" }, { email: "bo@x.com", yg: "Year 13" }, { email: "eve@x.com", yg: "Year 11" }];
+  const ado = { "0|ada@x.com": "LT A then B", "0|bo@x.com": "LT A then B", "1|eve@x.com": "Y11 Day" };
+  const bd2 = { batches: { "13": "B" }, sets: [
+    { yg: "13", block: "A", set_code: "PSY/13/A", subject: "Psychology", lead: "TCH" }, { yg: "13", block: "B", set_code: "BUS/13/B", subject: "Business", lead: "OTH" },
+    { yg: "13", block: "A", set_code: "__FREE__", subject: "Y13 Supported Study", lead: "FRL" }],
+    members: [{ yg: "13", block: "A", email: "ada@x.com", setCode: "PSY/13/A" }, { yg: "13", block: "B", email: "ada@x.com", setCode: "BUS/13/B" }] };
+  const g = CHK({ dates, acts, pupils, ado, staff: [{ c: "TCH" }, { c: "OTH" }, { c: "FRL" }], blockData: bd2, today: 20260929 }).blockGaps;
+  t("a block activity whose year group has no set lists is listed", g.some(x => x.act === "Y11 Day" && /no set lists imported for Year 11/.test(x.why)));
+  t("a pupil in no set of a block with no Supported Study is listed", g.some(x => x.act === "LT A then B" && x.block === "B" && x.emails.join() === "bo@x.com"));
+  t("…but not where Supported Study catches them (block A)", !g.some(x => x.block === "A"));
+  t("…and exactly those two", g.length === 2, JSON.stringify(g));
+  t("the card lists them", has('section("Block timetable: set lists missing, or pupils with no set and no Supported Study",r.blockGaps,'));
 }
 
 // ════════════════════════════════════════════════════════════════════════════

@@ -965,7 +965,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v173';
+const CURRENT_VERSION = 'v174';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -8279,7 +8279,7 @@ function _arShortDate(di){const d=dates[di];return d?(d.full||"").slice(0,5):"";
 // as Results by Date counts them — the effective allocation of every pupil, response and result
 // — so the two screens agree.
 function allocUpcomingChecks(todayYmd){
-  const out={missingAct:[],unstaffed:[],idleStaff:[],nearDup:[],badCodes:[],overCap:[]};
+  const out={missingAct:[],unstaffed:[],idleStaff:[],nearDup:[],badCodes:[],overCap:[],blockGaps:[]};
   const up=sortedDateIndices().filter(di=>dates[di]&&!_diHasHappened(di,todayYmd));
   if(!up.length)return out;
   const upSet=new Set(up);
@@ -8341,6 +8341,19 @@ function allocUpcomingChecks(todayYmd){
     });
     // 6. Capacity exceeded by effective allocation.
     running.forEach(a=>{const n=c[a.n]||0;if(a.cap>0&&n>a.cap)out.overCap.push({di,act:a.n,n,cap:a.cap});});
+    // 7. v174: a block-timetable activity with no set lists for its year group (pupils would see
+    //    the split, and staff no set registers), or pupils on it in no set of a block that has no
+    //    Supported Study row to catch them (they'd have no register at all).
+    running.filter(a=>a.blocks&&a.blocks.yg).forEach(a=>{
+      const yg=a.blocks.yg;
+      if(!blockData.batches||!blockData.batches[yg]){out.blockGaps.push({di,act:a.n,why:"no set lists imported for Year "+yg,emails:[]});return;}
+      (isSplitAct(a)?["A","B"]:["A"]).forEach(S=>{
+        const b=a.blocks[S];if(!b||_blockFreeRow(yg,b))return;
+        const miss=[...emails].filter(ne=>getEffectiveAllocOnDate(ne,di,engMap)===a.n&&!_blockMemberIndex().get(yg+"|"+b+"|"+ne));
+        if(miss.length)out.blockGaps.push({di,act:a.n,sess:isSplitAct(a)?S:"",block:b,emails:miss,
+          why:miss.length+" pupil"+(miss.length===1?"":"s")+" in no set in block "+b+", and no Supported Study for it"});
+      });
+    });
   });
   // 5. Codes nobody on the roster has: on activities that still have a date to come, and in the
   //    staff calendar for those dates. A near miss in capitals is offered as the likely meaning.
@@ -8399,6 +8412,9 @@ function renderUpcomingChecks(el){
     x.di==null?btn("Activities",()=>_goActivityRow(x.act)):btn("Staff Calendar",()=>{currentTab="staff";render();})));
   section("Over capacity",r.overCap,x=>h("div",null,
     dl(x.di)+" · ",h("b",null,x.act)," — "+x.n+" pupils, capacity "+x.cap,btn("Results by Date",()=>_goResultsByDate(x.di,x.act))));
+  section("Block timetable: set lists missing, or pupils with no set and no Supported Study",r.blockGaps,x=>h("div",null, // v174
+    dl(x.di)+(x.sess?" · "+sessL(x.sess):"")+" · ",h("b",null,x.act)," — ",
+    h("span",{title:(x.emails||[]).map(_arName).join(", ")},x.why),btn("Blocks",()=>{currentTab="admin";adminSub="blocks";render();})));
 }
 function renderAllocReport(el){
   el.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text2)",lineHeight:"1.6",marginBottom:"12px"}},
@@ -15287,6 +15303,25 @@ async function _blkPost(table,rows){
     if(!res.ok)throw new Error(table+": HTTP "+res.status+" "+(await res.text().catch(()=>"")).slice(0,160));
   }
 }
+// v174: the set lists in the full JSON backup. They live in their own tables, so the backup
+// held none of them (29 Sept: a backup taken after the Y13 import had no sets, members, leads
+// or rooms). The block mapping and support links are on the activities, already backed up.
+function blockBackupPayload(){
+  return {batches:Object.assign({},blockData.batches||{}),
+    sets:(blockData.sets||[]).map(s=>Object.assign({},s)),members:(blockData.members||[]).map(m=>Object.assign({},m))};
+}
+// What a restore writes back: each year group in the backup, as a new batch — so it switches
+// in one step, like an import, and year groups not in the backup are left alone. null when the
+// backup has no set lists (every backup before v174): the current ones stay as they are.
+function blockRestoreRows(saved,batch){
+  if(!saved||!Array.isArray(saved.sets)||!saved.sets.length)return null;
+  const sets=saved.sets.map(s=>({pfx:PFX,yg:String(s.yg),batch,block:s.block,set_code:s.set_code,subject_code:s.subject_code||"",
+    subject:s.subject||"",lead:s.lead||"",venue:s.venue||"",teacher:s.teacher||""}));
+  const ygs=new Set(sets.map(s=>s.yg));
+  const members=(saved.members||[]).filter(m=>ygs.has(String(m.yg))).map(m=>({pfx:PFX,yg:String(m.yg),batch,block:m.block,
+    email:normEmail(m.email),set_code:m.setCode||m.set_code}));
+  return {sets,members};
+}
 // Write an import: members, then sets (the switch), then tidy away older batches.
 async function blocksCommit(rows){
   const ygs=[...new Set(rows.sets.map(r=>r.yg))];const batch=rows.sets[0].batch;
@@ -17444,9 +17479,10 @@ function renderAdminSync(el){
   // on a new device) by keeping a downloadable snapshot of every data table in one file.
   const backupCard=h("div",{className:"card card-pad mb-16",style:{background:"var(--surface2)",border:"1px solid var(--border2)"}});
   backupCard.appendChild(h("div",{style:{fontWeight:700,marginBottom:"6px"}},"💾 Full-state JSON backup"));
-  backupCard.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text2)",marginBottom:"10px",lineHeight:"1.7"}},"Downloads every LEX table into one JSON file: activities, staff, pupils, dates, allocations, overrides, form data, venues, consents, sub-groups, attendance, notepad, prior YTD, and activity log. Use this as an off-platform safety net in case Supabase auto-pauses and local browser storage also disappears. Restore overwrites all current data."));
+  backupCard.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text2)",marginBottom:"10px",lineHeight:"1.7"}},"Downloads every LEX table into one JSON file: activities, staff, pupils, dates, allocations, overrides, form data, venues, consents, sub-groups, attendance, notepad, prior YTD, LEX THINK set lists, and activity log. Use this as an off-platform safety net in case Supabase auto-pauses and local browser storage also disappears. Restore overwrites all current data."));
   const backupBtnRow=h("div",{className:"flex",style:{gap:"8px",flexWrap:"wrap"}});
-  backupBtnRow.appendChild(h("button",{className:"btn btn-primary btn-sm",onClick:()=>{
+  backupBtnRow.appendChild(h("button",{className:"btn btn-primary btn-sm",onClick:async()=>{
+    try{await blocksLoad();}catch(_){} // v174: the latest set lists (a failed read keeps this device's copy)
     const payload={
       _backupVersion:1,
       _createdAt:new Date().toISOString(),
@@ -17458,7 +17494,8 @@ function renderAdminSync(el){
       notepad:notepadText||"",
       attendance,
       activityLog:activityLog.slice(-500),
-      snapshots:(typeof snapshots!=="undefined"&&snapshots)||[]
+      snapshots:(typeof snapshots!=="undefined"&&snapshots)||[],
+      blocks:blockBackupPayload() // v174: set lists (sets, leads, rooms, membership)
     };
     try{
       const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
@@ -17491,7 +17528,8 @@ function renderAdminSync(el){
         "Activities: "+(Array.isArray(data.acts)?data.acts.length:0),
         "Dates: "+(Array.isArray(data.dates)?data.dates.length:0),
         "Alloc results: "+(Array.isArray(data.allocRes)?data.allocRes.length:0),
-        "Form responses: "+(Array.isArray(data.formData)?data.formData.length:0)
+        "Form responses: "+(Array.isArray(data.formData)?data.formData.length:0),
+        "LEX THINK set lists: "+(data.blocks&&Array.isArray(data.blocks.sets)&&data.blocks.sets.length?data.blocks.sets.length+" sets and groups":"none in this backup — the current ones are kept")
       ];
       const when=data._createdAt?new Date(data._createdAt).toLocaleString():"unknown date";
       if(!confirm("⚠️ RESTORE FROM BACKUP — overwrites ALL current data.\n\nFrom: "+when+"\n\n"+summary.join("\n")+"\n\nThis cannot be undone (but current state will be saved as a snapshot first).\n\nProceed?")){
@@ -17519,7 +17557,16 @@ function renderAdminSync(el){
       if(Array.isArray(data.activityLog))activityLog=data.activityLog;
       markBlobsForOverwrite(); // v169: a confirmed restore replaces newer versions on purpose
       saveAll();
-      logAction("RESTORE","Full-state JSON restored from "+(data._createdAt||"unknown date"));
+      // v174: set lists — written back as a new import; a backup without them keeps the current ones.
+      const _br=blockRestoreRows(data.blocks,new Date().toISOString());
+      let _brNote=" (set lists kept as they were)";
+      if(_br&&!supaClient){_brNote=" (set lists NOT restored: no cloud connection)";toast("Set lists NOT restored — no cloud connection. Restore again once connected.","err");}
+      else if(_br){
+        try{await blocksCommit(_br);await blocksLoad();_brNote=" (with "+_br.sets.length+" set-list rows)";}
+        catch(e2){console.error("Restoring set lists failed",e2);_brNote=" (set lists NOT restored: "+(e2.message||e2)+")";
+          toast("Set lists NOT restored — "+(e2.message||e2)+". Re-import them in Settings → Blocks.","err");}
+      }
+      logAction("RESTORE","Full-state JSON restored from "+(data._createdAt||"unknown date")+_brNote);
       toast("Restored ✓ — reloading UI");
       // Force a full re-render
       const main=document.querySelector(".main");if(main){main.innerHTML="";render();}
