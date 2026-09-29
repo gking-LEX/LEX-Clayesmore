@@ -399,7 +399,7 @@ S("v154 — Split activities on pupil-facing output");
   const staff = [{ c: "JAR", n: "J Reach" }, { c: "NJ", n: "N Jones" }];
   const sess = new Function("staff", "isSplitAct",
     [grab("const LEX_TIME_FULL=", "\r\n", "LEX times"),
-     grab("function actSessions(act){", "\r\n}", "actSessions")].join("\n") + "\nreturn actSessions;")(
+     grab("function actSessions(act,email,di){", "\r\n}", "actSessions")].join("\n") + "\nreturn actSessions;")(
     staff, a => a && a.sessA !== a.sessB);
   let s = sess({ n: "Golf", v: "Range", lead: "JAR", sessA: "Golf", sessB: "Golf" });
   t("whole-day gives one session", s.length === 1 && s[0].time === "09:00–12:30");
@@ -1602,6 +1602,411 @@ var CHK = w => new Function("W", `
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+S("v170 — Leavers and lead codes");
+var LVR_SRC = [
+  grab("function h(tag,attrs,...ch){", "\r\n}", "h"),
+  grab("function parseDateDmy(", "\r\n}", "parseDateDmy"),
+  grab("function _todayYmd(", "\r\n", "_todayYmd"),
+  grab("function saGet(", "\r\n", "saGet"),
+  grab("function saCode(", "\r\n", "saCode"),
+  grab("const STAFF_TAIL_ORDER=", "\r\n", "STAFF_TAIL_ORDER"),
+  grab("function staffSortKey(", "\r\n}", "staffSortKey"),
+  grab("function sortedStaff(", "\r\n", "sortedStaff"),
+  grab("function _staffCodeSelect(", "\r\n}", "_staffCodeSelect"),
+  grab("function staffRemovalPlan(", "\r\n}", "staffRemovalPlan"),
+  grab("function applyStaffRemoval(", "\r\n}", "applyStaffRemoval")
+].join("\n");
+// Just enough of a DOM for the real h() to build a <select> the test can read.
+var LVR = w => new Function("W", `
+  class Node{} class El extends Node{constructor(t){super();this.tagName=t.toUpperCase();this.style={};this.kids=[];this.attrs={};this.on={};this.className="";}
+    appendChild(c){this.kids.push(c);return c;} setAttribute(k,v){this.attrs[k]=String(v);} addEventListener(t,f){this.on[t]=f;}}
+  class Txt extends Node{constructor(s){super();this.text=s;}}
+  const document={createElement:t=>new El(t),createTextNode:s=>new Txt(s)};
+  let acts=W.acts,staff=W.staff,sa=W.sa,dates=W.dates;
+  ${LVR_SRC}
+  const opts=sel=>sel.kids.map(o=>({v:o.attrs.value,text:o.kids.map(k=>k.text).join(""),sel:!!o.selected}));
+  return {staffRemovalPlan,applyStaffRemoval,_staffCodeSelect,opts,get staff(){return staff;},get sa(){return sa;}};`)(w);
+{
+  // Invented staff and activities — this file is in a public repository.
+  const world = () => ({
+    dates: [{ full: "12/09/2026" }, { full: "03/10/2026" }, { full: "10/10/2026" }, { full: "TBC" }],
+    staff: [{ c: "AAA", n: "Ann Able" }, { c: "LVR", n: "Lee Vere" }, { c: "LV", n: "Liv Vane" }, { c: "CCC", n: "Cal Cee" }],
+    acts: [
+      { id: "g", n: "Golf", lead: "LVR", sessALead: "LVR", sessBLead: "LVR", sessA: "Golf", sessB: "Golf", staff: ["CCC", "LVR", "LV"], di: [0, 1, 2] },
+      { id: "c", n: "Chess then Draughts", lead: "AAA", sessALead: "AAA", sessBLead: "LVR", sessA: "Chess", sessB: "Draughts", staff: [], di: [1, 2] },
+      { id: "k", n: "Knitting", lead: "AAA", sessALead: "AAA", sessBLead: "AAA", staff: ["LVR"], di: [2] }
+    ],
+    sa: { "0|LVR": { act: "Golf" }, "1|LVR|A": { act: "Golf" }, "2|LVR": { act: "Golf" }, "3|LVR": { act: "Golf" },
+          "2|CCC": { act: "Golf" }, "2|LV": { act: "Golf" } }
+  });
+  const TODAY = 20261003;   // 12/09 past, 03/10 today, 10/10 to come, "TBC" unreadable
+  const W1 = LVR(world()), plan = W1.staffRemovalPlan("LVR", TODAY);
+  t("finds every lead field holding the code", plan.leads.map(l => l.act.n + ":" + l.field).join(",") ===
+    "Golf:lead,Golf:sessALead,Golf:sessBLead,Chess then Draughts:sessBLead", plan.leads.map(l => l.act.n + ":" + l.field).join(","));
+  t("finds every activity listing them as additional staff", plan.tags.map(x => x.act.n).join(",") === "Golf,Knitting");
+  t("only dates after today count as upcoming", JSON.stringify(plan.future) === '["2|LVR"]', JSON.stringify(plan.future));
+  t("past dates, today and unreadable dates are kept as the record", plan.past.sort().join(",") === "0|LVR,1|LVR|A,3|LVR", plan.past.join(","));
+  t("another code that starts the same (LV) is not caught up in it", !plan.future.includes("2|LV") && !plan.past.includes("2|LV"));
+  const pLV = W1.staffRemovalPlan("LV", TODAY);
+  t("…nor, removing LV, is LVR", JSON.stringify(pLV.future) === '["2|LV"]' && pLV.past.length === 0 && pLV.leads.length === 0
+    && pLV.tags.map(x => x.act.n).join() === "Golf", JSON.stringify(pLV.future) + JSON.stringify(pLV.past));
+  W1.applyStaffRemoval(plan, true);
+  t("remove and clear: off the roster", !W1.staff.some(s => s.c === "LVR") && W1.staff.length === 3);
+  const W1acts = (() => { const w = world(); const W = LVR(w); W.applyStaffRemoval(W.staffRemovalPlan("LVR", TODAY), true); return { w, W }; })();
+  const g = W1acts.w.acts.find(a => a.id === "g"), c = W1acts.w.acts.find(a => a.id === "c"), k = W1acts.w.acts.find(a => a.id === "k");
+  t("…their leads are cleared, all three on Golf", g.lead === "" && g.sessALead === "" && g.sessBLead === "");
+  t("…a split's P4 lead is cleared and its P1 lead left alone", c.sessBLead === "" && c.sessALead === "AAA" && c.lead === "AAA");
+  t("…their additional-staff tags go, others stay", JSON.stringify(g.staff) === '["CCC","LV"]' && JSON.stringify(k.staff) === "[]");
+  const sa1 = W1acts.W.sa;
+  t("…their upcoming calendar entry goes", !("2|LVR" in sa1));
+  t("…their past, today's and unreadable-date entries stay", "0|LVR" in sa1 && "1|LVR|A" in sa1 && "3|LVR" in sa1);
+  t("…other people's entries on the same date stay", "2|CCC" in sa1 && "2|LV" in sa1);
+  const w2 = world(), W2 = LVR(w2); W2.applyStaffRemoval(W2.staffRemovalPlan("LVR", TODAY), false);
+  t("remove and leave: off the roster, nothing else touched", !W2.staff.some(s => s.c === "LVR")
+    && w2.acts[0].lead === "LVR" && w2.acts[0].staff.includes("LVR") && "2|LVR" in W2.sa && Object.keys(W2.sa).length === 6);
+  // The lead picker.
+  const W3 = LVR(world());
+  let picked = null;
+  const s1 = W3._staffCodeSelect("AAA", v => { picked = v; }, "75px"), o1 = W3.opts(s1);
+  t("picker: TBC first, then the roster", o1[0].v === "" && o1[0].text === "TBC" && o1.length === 1 + 4);
+  t("picker: the stored code is the one selected", o1.filter(o => o.sel).map(o => o.v).join() === "AAA");
+  s1.on.change({ target: { value: "CCC" } });
+  t("picker: choosing someone hands their code back", picked === "CCC");
+  const o2 = W3.opts(W3._staffCodeSelect("", () => {}));
+  t("picker: an empty lead shows TBC", o2.filter(o => o.sel).map(o => o.v).join() === "");
+  const s3 = W3._staffCodeSelect("Zorbo", () => {}), o3 = W3.opts(s3);
+  t("picker: a code not on the roster stays visible and selected, marked", o3.some(o => o.v === "Zorbo" && o.sel && /not on roster/.test(o.text)));
+  t("picker: …and the box is shown in red with a reason", s3.style.color === "var(--red)" && /not on the staff roster/.test(s3.attrs.title || ""));
+  t("picker: a known code is not flagged", !W3._staffCodeSelect("AAA", () => {}).style.color);
+  // Wiring in the page.
+  t("the main Lead uses the roster picker", has('const ls=_staffCodeSelect(a.lead,v=>{a.lead=v;syncRosterToCalendar();rebuildAdminPreserveScroll();},"75px"); // v170'));
+  t("the Split panel's P1 and P4 leads use it too (no free text)",
+    has('colA.appendChild(mkLeadSplit("Lead","sessALead"));') && has('colB.appendChild(mkLeadSplit("Lead","sessBLead"));') && !has('mkSplit("Lead code"'));
+  t("removing staff goes through the dialog", has("onClick:()=>confirmStaffRemoval(s)},\"✕\")) // v170"));
+  t("the old removal that deleted every date, past included, is gone", !has("Object.keys(sa).forEach(k=>{if(saCode(k)===sc)delete sa[k];});"));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// v171 — block set lists (runs at the end with P0: reading an .xlsx is async).
+var BLK_SRC = [
+  grab("function normEmail(", "\r\n", "normEmail"),
+  grab("const BLOCK_SUBJECT_NAMES={", "};", "BLOCK_SUBJECT_NAMES"),
+  grab("const BLOCK_FREE=", "\r\n", "BLOCK_FREE"),
+  grab("async function _unzipXmlEntries(", "\r\n}", "_unzipXmlEntries"),
+  grab("function _xmlUnescape(", "\r\n}", "_xmlUnescape"),
+  grab("function _xmlRunsText(", "\r\n}", "_xmlRunsText"),
+  grab("async function readXlsxSheets(", "\r\n}", "readXlsxSheets"),
+  grab("function parseSetListSheets(", "\r\n}", "parseSetListSheets"),
+  grab("function _nameKey(", "\r\n", "_nameKey"),
+  grab("function _pupilYgNum(", "\r\n", "_pupilYgNum"),
+  grab("function matchSetPupils(", "\r\n}", "matchSetPupils"),
+  grab("function blockImportDiff(", "\r\n}", "blockImportDiff"),
+  grab("function blockImportDefaults(", "\r\n}", "blockImportDefaults"),
+  grab("function blockImportRows(", "\r\n}", "blockImportRows"),
+  grab("function blockCurrent(", "\r\n}", "blockCurrent"),
+  grab("function _blkHeaders(", "\r\n", "_blkHeaders"),
+  grab("async function _blkPost(", "\r\n}", "_blkPost"),
+  grab("async function blocksCommit(", "\r\n}", "blocksCommit")
+].join("\n");
+var BLK = w => new Function("W", `
+  let pupils=W.pupils||[],staff=W.staff||[];const PFX=W.pfx||"lex12";const supaClient={url:"https://db.test",key:"k"};const fetch=W.fetch||(async()=>({ok:true}));
+  ${BLK_SRC}
+  return {readXlsxSheets,parseSetListSheets,matchSetPupils,blockImportDiff,blockImportDefaults,blockImportRows,blockCurrent,blocksCommit,_pupilYgNum};`)(w);
+// A minimal .xlsx writer for invented workbooks: a zip (deflated, or stored for the names in
+// `stored`) of the XML parts the reader looks at. Cells: strings → shared strings, numbers → values;
+// a sheet may give its own raw XML to exercise inline strings, entities and gaps.
+var mkZip = (files, stored) => {
+  const zlib = require("zlib"), parts = [], cd = []; let off = 0;
+  for (const [name, text] of Object.entries(files)) {
+    const raw = Buffer.from(text, "utf8"), st = (stored || []).includes(name), data = st ? raw : zlib.deflateRawSync(raw), nb = Buffer.from(name);
+    const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(st ? 0 : 8, 8);
+    lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(raw.length, 22); lh.writeUInt16LE(nb.length, 26);
+    const ch = Buffer.alloc(46); ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(st ? 0 : 8, 10);
+    ch.writeUInt32LE(data.length, 20); ch.writeUInt32LE(raw.length, 24); ch.writeUInt16LE(nb.length, 28); ch.writeUInt32LE(off, 42);
+    parts.push(lh, nb, data); cd.push(ch, nb); off += 30 + nb.length + data.length;
+  }
+  const cdb = Buffer.concat(cd), e = Buffer.alloc(22), n = Object.keys(files).length;
+  e.writeUInt32LE(0x06054b50, 0); e.writeUInt16LE(n, 8); e.writeUInt16LE(n, 10); e.writeUInt32LE(cdb.length, 12); e.writeUInt32LE(off, 16);
+  return Buffer.concat([...parts, cdb, e]);
+};
+var mkXlsx = (sheets, stored) => {
+  const ss = [], si = s => { let i = ss.indexOf(s); if (i < 0) { ss.push(s); i = ss.length - 1; } return i; };
+  const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const colL = i => { let s = ""; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
+  const files = {};
+  sheets.forEach((sh, k) => {
+    files["xl/worksheets/sheet" + (k + 1) + ".xml"] = sh.xml || ('<?xml version="1.0"?><worksheet><sheetData>' + sh.rows.map((r, ri) =>
+      '<row r="' + (ri + 1) + '">' + r.map((c, ci) => c === "" || c == null ? "" : typeof c === "number"
+        ? '<c r="' + colL(ci) + (ri + 1) + '"><v>' + c + '</v></c>' : '<c r="' + colL(ci) + (ri + 1) + '" t="s"><v>' + si(c) + '</v></c>').join("") + '</row>').join("") + '</sheetData></worksheet>');
+  });
+  files["xl/workbook.xml"] = '<workbook xmlns:r="x"><sheets>' + sheets.map((sh, k) => '<sheet name="' + esc(sh.name) + '" sheetId="' + (k + 1) + '" r:id="rId' + (k + 1) + '"/>').join("") + '</sheets></workbook>';
+  files["xl/_rels/workbook.xml.rels"] = '<Relationships>' + sheets.map((sh, k) => '<Relationship Id="rId' + (k + 1) + '" Target="worksheets/sheet' + (k + 1) + '.xml"/>').join("") + '</Relationships>';
+  files["xl/sharedStrings.xml"] = '<sst>' + ss.map(s => '<si><t>' + esc(s) + '</t></si>').join("") + '</sst>';
+  files["docProps/thumbnail.jpeg"] = "not xml";
+  return mkZip(files, stored);
+};
+// An invented set list in the iSAMS shape. dob is a real-looking column that must never be read.
+var mkSetSheet = (code, teacher, rows) => ({ name: code.replace(/\//g, "-") + " - (13)", rows: [
+  [code + " - Set List (" + code + ") - Mx TEACHER (" + teacher + ")"],
+  ["Surname", "Forename (Firstname)", "Date of Birth", "Academic House", "Year Group Code", "House Code"],
+  ...rows.map(r => [r[0], r[1], 38000 + r[0].length, "Manor", "13", "M"]),
+  ["Total: " + rows.length + "   |   Boys: 0   |   Girls: 0"], ["Average Age: 17.5   |   Max Age: 18.0   |   Min Age: 17.0"]] });
+async function blockTests() {
+  S("v171 — Block set lists (import)");
+  // Invented pupils — this file is in a public repository.
+  const pupils = [
+    { forename: "Ada", pref: "", surname: "Quill", yg: "Year 13", email: "ada.q@x.com" },
+    { forename: "Benedict", pref: "Ben", surname: "Rook", yg: "Year 13", email: "ben.r@x.com" },
+    { forename: "Chloé", pref: "", surname: "Stave", yg: "Year 13", email: "chloe.s@x.com" },
+    { forename: "Dan", pref: "", surname: "Twill", yg: "Year 13", email: "dan.t1@x.com" },
+    { forename: "Dan", pref: "", surname: "Twill", yg: "Year 13", email: "dan.t2@x.com" },
+    { forename: "Eve", pref: "", surname: "Umber", yg: "Year 12", email: "eve.u@x.com" },
+    { forename: "Fay", pref: "", surname: "Vole", yg: "Year 13", email: "fay.v@x.com" },
+    { forename: "Kit", pref: "", surname: "Wren", yg: "Year 13", email: "kit.w@x.com" }    // known by the bracketed name only
+  ];
+  const staff = [{ c: "TCH", n: "Tee Chair" }, { c: "OTH", n: "Oth Er" }];
+  const B = BLK({ pupils, staff });
+  // Reader
+  const buf = mkXlsx([
+    mkSetSheet("PSY/13/A", "TCH", [["Quill", "Ada"], ["Rook", "Benedict (Ben)"], ["Stave", "Chloe"], ["Wren", "Christopher (Kit)"]]),
+    mkSetSheet("ART/13/A", "NEW", [["Vole", "Fay"], ["Rook", "Ben"]]),
+    mkSetSheet("BUS/13/B", "OTH", [["Twill", "Dan"], ["Umber", "Eve"], ["Nobody", "Here"], ["Quill", "Ada"], ["Quill", "Ada"]]),
+    { name: "Raw & odd", xml: '<worksheet><sheetData><row r="2"><c r="A2" t="inlineStr"><is><t>R&amp;D</t><rPh><t>x</t></rPh></is></c><c r="C2" s="1"/>' +
+      '<c r="D2"><v>4.5</v></c></row><row r="3" spans="1:2"/></sheetData></worksheet>' }
+  ], ["xl/worksheets/sheet1.xml"]);
+  const sheets = await B.readXlsxSheets(buf);
+  t("reads every sheet, in workbook order", sheets.map(s => s.name).join("|") === "PSY-13-A - (13)|ART-13-A - (13)|BUS-13-B - (13)|Raw & odd");
+  t("reads a stored entry and a deflated one alike", sheets[0].rows[2][0] === "Quill" && sheets[1].rows[2][0] === "Vole");
+  t("shared strings, numbers and the header row come back as text", sheets[0].rows[1][0] === "Surname" && /^\d+$/.test(sheets[0].rows[2][2]));
+  const raw = sheets[3].rows;
+  t("inline strings, entities and phonetic hints", raw[1][0] === "R&D");
+  t("row and column gaps keep positions (A2, D2)", raw.length >= 2 && raw[0].length === 0 && raw[1][3] === "4.5" && raw[1][1] === "");
+  let threw = ""; try { await B.readXlsxSheets(Buffer.from("not a zip at all")); } catch (e) { threw = e.message; }
+  t("a file that isn't an .xlsx is refused with a plain message", /isn't an Excel/.test(threw), threw);
+  // Parse
+  const P = B.parseSetListSheets(sheets);
+  t("one set per set-list sheet; the odd sheet is reported, not guessed", P.sets.length === 3 && P.problems.length === 1 && P.problems[0].sheet === "Raw & odd");
+  const psy = P.sets[0];
+  t("set code, subject, year, block and teacher from the first cell",
+    psy.setCode === "PSY/13/A" && psy.subjectCode === "PSY" && psy.yg === "13" && psy.block === "A" && psy.teacher === "TCH");
+  t("footer rows are not pupils", psy.pupils.length === 4 && P.sets[2].pupils.length === 5);
+  t("a bracketed first name is kept apart from the forename", psy.pupils[1].forename === "Benedict" && psy.pupils[1].alt === "Ben");
+  t("Date of Birth (and every other column) is never read", P.sets.every(s => s.pupils.every(r => Object.keys(r).join() === "surname,forename,alt"))
+    && !JSON.stringify(P).includes("380"));
+  const P2 = B.parseSetListSheets([{ name: "x", rows: [["MATH/13/C2 - Set List (MATH/13/C2) - Mx A (AB)"], ["Surname", "Forename (Firstname)"], ["Quill", "Ada"]] }]);
+  t("a set code with a suffix after the block letter", P2.sets[0].setCode === "MATH/13/C2" && P2.sets[0].block === "C");
+  // Match
+  const M = B.matchSetPupils(P, {});
+  const set = code => M.members.filter(m => m.setCode === code).map(m => m.email).sort().join();
+  t("forename, bracketed name, preferred name and accents all match", set("PSY/13/A") === "ada.q@x.com,ben.r@x.com,chloe.s@x.com,kit.w@x.com", set("PSY/13/A"));
+  t("a pupil in two sets of one block is a clash", M.clashes.length === 1 && M.clashes[0].email === "ben.r@x.com" && M.clashes[0].sets.join() === "PSY/13/A,ART/13/A");
+  t("two roster pupils with one name are not guessed", M.unmatched.some(u => u.row.surname === "Twill" && u.candidates.length === 2));
+  t("a pupil in another year group doesn't match", M.unmatched.some(u => u.row.surname === "Umber" && /no pupil/.test(u.why)));
+  t("a name nobody has is listed", M.unmatched.some(u => u.row.surname === "Nobody"));
+  t("listed twice in one set counts once", M.members.filter(m => m.email === "ada.q@x.com" && m.block === "B").length === 1);
+  const twill = M.unmatched.find(u => u.row.surname === "Twill"), umber = M.unmatched.find(u => u.row.surname === "Umber"), nob = M.unmatched.find(u => u.row.surname === "Nobody");
+  const M2 = B.matchSetPupils(P, { [twill.key]: "dan.t2@x.com", [umber.key]: "", [nob.key]: "" });
+  t("a choice on the review screen settles a name", M2.members.some(m => m.email === "dan.t2@x.com" && m.setCode === "BUS/13/B") && !M2.unmatched.length);
+  t("…and 'leave out' leaves it out", !M2.members.some(m => m.email === "eve.u@x.com"));
+  // Defaults, rows, current batch, diff
+  const D = B.blockImportDefaults(P, { sets: [] });
+  t("lead defaults to the teacher when they're on the LEX roster", D.sets["PSY/13/A"].lead === "TCH" && D.sets["BUS/13/B"].lead === "OTH");
+  t("…and to TBC when they aren't — staff are never created", D.sets["ART/13/A"].lead === "");
+  t("subject names offered from the built-in list", D.sets["PSY/13/A"].subject === "Psychology");
+  t("Supported Study starts as the fallback in every block", D.free["13"].A.subject === "Y13 Supported Study" && D.free["13"].B.subject === "Y13 Supported Study"
+    && D.free["13"].A.lead === "" && Object.keys(D.free["13"]).join() === "A,B");
+  const prev = { sets: [{ yg: "13", set_code: "PSY/13/A", subject_code: "PSY", subject: "Psych (A level)", lead: "OTH", venue: "PY01" },
+    { yg: "13", set_code: "HSC/13/D", subject_code: "ART", subject: "Fine Art", lead: "", venue: "" },
+    { yg: "13", set_code: "__FREE__", block: "*", subject: "Study", lead: "TCH", venue: "Library" },
+    { yg: "13", set_code: "__FREE__", block: "B", subject: "Study B", lead: "OTH", venue: "Hall" }] };
+  const D2 = B.blockImportDefaults(P, prev);
+  t("a re-import keeps the lead, venue and name chosen last time", D2.sets["PSY/13/A"].lead === "OTH" && D2.sets["PSY/13/A"].venue === "PY01" && D2.sets["PSY/13/A"].subject === "Psych (A level)");
+  t("a name saved for a subject code is offered for its other sets", D2.sets["ART/13/A"].subject === "Fine Art");
+  t("…and Supported Study's, per block (a year-wide row still counts)", D2.free["13"].A.subject === "Study" && D2.free["13"].A.lead === "TCH"
+    && D2.free["13"].B.subject === "Study B" && D2.free["13"].B.venue === "Hall");
+  const R = B.blockImportRows(P, M2, D, "B2");
+  t("rows: every set, a Supported Study row per block, every member, one batch",
+    R.sets.length === 5 && R.sets.filter(s => s.set_code === "__FREE__").map(s => s.block).sort().join() === "A,B" && R.members.length === M2.members.length
+    && [...R.sets, ...R.members].every(r => r.batch === "B2" && r.pfx === "lex12"));
+  const old = [{ yg: "13", batch: "B1", block: "A", set_code: "PSY/13/A" }, { yg: "12", batch: "B0", block: "A", set_code: "X/12/A" }];
+  const oldM = [{ yg: "13", batch: "B1", block: "A", email: "ada.q@x.com", set_code: "PSY/13/A" }, { yg: "13", batch: "B1", block: "A", email: "fay.v@x.com", set_code: "PSY/13/A" },
+    { yg: "13", batch: "B1", block: "B", email: "gone@x.com", set_code: "BUS/13/B" }, { yg: "12", batch: "B0", block: "A", email: "eve.u@x.com", set_code: "X/12/A" },
+    { yg: "13", batch: "B3", block: "A", email: "half@x.com", set_code: "PSY/13/A" }];   // an import that never finished
+  const C = B.blockCurrent(old, oldM);
+  t("the current import is the newest batch with sets rows, per year group", C.batches["13"] === "B1" && C.batches["12"] === "B0");
+  t("members of an unfinished import are ignored", !C.members.some(m => m.email === "half@x.com") && C.members.length === 4);
+  const d = B.blockImportDiff(M2.members, C.members);
+  t("diff: joiners, movers and leavers", d.joiners.some(x => x.email === "ben.r@x.com") && d.moves.some(x => x.email === "fay.v@x.com" && x.from === "PSY/13/A" && x.to === "ART/13/A")
+    && d.leavers.some(x => x.email === "gone@x.com"));
+  t("…and another year group is not touched by it", !d.leavers.some(x => x.email === "eve.u@x.com"));
+  // Commit order: members, then sets (the switch), then tidy.
+  const calls = [];
+  const BC = BLK({ pupils, staff, fetch: async (url, o) => { calls.push((o.method || "GET") + " " + url.split("/rest/v1/")[1]); return { ok: true, text: async () => "" }; } });
+  await BC.blocksCommit(R);
+  t("commit writes members first, then sets, then removes older batches",
+    /^POST lex_block_members/.test(calls[0]) && /^POST lex_block_sets/.test(calls[1]) && calls.slice(2).every(c => /^DELETE .*batch=neq\.B2/.test(c)) && calls.length === 4, calls.join(" ; "));
+  const calls2 = [];
+  const BF = BLK({ pupils, staff, fetch: async (url, o) => { calls2.push((o.method || "GET") + " " + url.split("/rest/v1/")[1]); return /members/.test(url) ? { ok: false, status: 500, text: async () => "boom" } : { ok: true, text: async () => "" }; } });
+  let err = ""; try { await BF.blocksCommit(R); } catch (e) { err = e.message; }
+  t("if the members can't be written, the sets are never switched", /lex_block_members/.test(err) && !calls2.some(c => /lex_block_sets/.test(c)));
+  // Page wiring
+  t("Settings has a Blocks tab", has('{id:"blocks",l:"🧱 Blocks"}') && has('else if(adminSub==="blocks")renderAdminBlocks(container); // v171'));
+  t("the setup SQL keys both tables by batch (so an import switches in one step)",
+    has("primary key (pfx, yg, batch, block, set_code)") && has("primary key (pfx, yg, batch, block, email)"));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// v172 — the block timetable in use. Invented data only: set lists never come near this file.
+var USE_SRC = [
+  grab("function normEmail(", "\r\n", "normEmail"),
+  grab("function parseDateDmy(", "\r\n}", "parseDateDmy"),
+  grab("function _todayYmd(", "\r\n", "_todayYmd"),
+  grab("function _diHasHappened(", "\r\n}", "_diHasHappened"),
+  grab("function isSplitAct(", "\r\n", "isSplitAct"),
+  grab("function saKeysForDate(", "\r\n}", "saKeysForDate"),
+  grab("function saGet(", "\r\n", "saGet"),
+  grab("function saCode(", "\r\n", "saCode"),
+  grab("function saSet(", "\r\n}", "saSet"),
+  grab("const LEX_TIME_FULL=", "\r\n", "LEX times"),
+  grab("function actSessions(act,email,di){", "\r\n}", "actSessions"),
+  grab("const BLOCK_FREE=", "\r\n", "BLOCK_FREE"),
+  grab("function parseSetListSheets(", "\r\n}", "parseSetListSheets"),
+  grab("function actBlockFor(", "\r\n}", "actBlockFor"),
+  grab("let _blkIdx=null", "\r\n", "_blkIdx"),
+  grab("function _blockMemberIndex(", "\r\n}", "_blockMemberIndex"),
+  grab("function _blockFreeRow(", "\r\n}", "_blockFreeRow"),
+  grab("function blockDetailFor(", "\r\n}", "blockDetailFor"),
+  grab("function blockSessionSets(", "\r\n}", "blockSessionSets"),
+  grab("function blockSetHas(", "\r\n}", "blockSetHas"),
+  grab("function _blockSessionsOf(", "\r\n", "_blockSessionsOf"),
+  grab("function blockPupilSetsText(", "\r\n}", "blockPupilSetsText"),
+  grab("function blockStaffLines(", "\r\n}", "blockStaffLines"),
+  grab("function blockNoticeLines(", "\r\n}", "blockNoticeLines"),
+  grab("function blockSwitchPlan(", "\r\n}", "blockSwitchPlan"),
+  grab("function applyBlockSwitch(", "\r\n}", "applyBlockSwitch"),
+  grab("function undoBlockSwitch(", "\r\n}", "undoBlockSwitch"),
+  grab("function parseLeadsVenuesSheets(", "\r\n}", "parseLeadsVenuesSheets"),
+  grab("function applyLeadsVenues(", "\r\n}", "applyLeadsVenues"),
+  grab("function _blockGuessMapping(", "\r\n}", "_blockGuessMapping")
+].join("\n");
+var USE = w => new Function("W", `
+  let acts=W.acts||[],staff=W.staff||[],sa=W.sa||{},dates=W.dates||[],venues=W.venues||[],blockData=W.blockData||{batches:{},sets:[],members:[]};
+  function invalidateCaches(){}
+  function findActByName_exact(n){return acts.find(a=>a.n===n)||null;}
+  function getEffectiveAllocOnDate(ne,di){return (W.alloc||{})[di+"|"+ne]||null;}
+  function buildEngMap(){return {};}
+  ${USE_SRC}
+  return {actBlockFor,blockDetailFor,blockSessionSets,blockSetHas,blockPupilSetsText,blockStaffLines,blockNoticeLines,blockSwitchPlan,
+    applyBlockSwitch,undoBlockSwitch,parseLeadsVenuesSheets,applyLeadsVenues,_blockGuessMapping,actSessions,parseSetListSheets,
+    get sa(){return sa;},get acts(){return acts;},setBlockData(v){blockData=v;}};`)(w);
+function blockUseTests() {
+  S("v172 — Block timetable in use (resolver, registers, switch)");
+  // Invented names and codes — this file is in a public repository.
+  const P = USE({}).parseSetListSheets([
+    { name: "a", rows: [["SS/11/BLOCK A - Set List (SS/11/BA) - Mrs A (MHC)"], ["Surname", "Forename (Firstname)"], ["Quill", "Ada"]] },
+    { name: "b", rows: [["ART/11/CB - Set List (ART/11/CB) - Mr B (DRP)"], ["Surname", "Forename (Firstname)"]] },
+    { name: "c", rows: [["CiM/11/D - Set List (CiM/11/D) - Mr C (AST)"], ["Surname", "Forename (Firstname)"]] }]);
+  t("the set code is the one in 'Set List (…)', and 'BLOCK A' gives the block", P.sets[0].setCode === "SS/11/BA" && P.sets[0].block === "A" && P.sets[0].subjectCode === "SS" && P.sets[0].yg === "11");
+  t("a two-letter set suffix keeps the block letter first (ART/11/CB → C)", P.sets[1].block === "C" && P.sets[1].setCode === "ART/11/CB");
+  t("lower-case subject codes are read", P.sets[2].subjectCode === "CIM" && P.sets[2].block === "D");
+  const staff = ["TCH", "NEW1", "OTH", "FRL", "OLD"].map(c => ({ c, n: "Mx " + c }));
+  const venues = [{ name: "PY01" }, { name: "Hall" }, { name: "Foyer" }];
+  const bd = { batches: { "13": "B1" }, sets: [
+    { yg: "13", block: "A", set_code: "PSY/13/A", subject: "Psychology", lead: "TCH", venue: "PY01" },
+    { yg: "13", block: "A", set_code: "ART/13/A", subject: "Art", lead: "NEW1", venue: "Hall" },
+    { yg: "13", block: "B", set_code: "BUS/13/B", subject: "Business", lead: "OTH", venue: "" },
+    { yg: "13", block: "A", set_code: "__FREE__", subject: "Y13 Supported Study", lead: "FRL", venue: "Foyer" },
+    { yg: "13", block: "B", set_code: "__FREE__", subject: "Y13 Supported Study", lead: "", venue: "" }],
+    members: [{ yg: "13", block: "A", email: "ada@x.com", setCode: "PSY/13/A" }, { yg: "13", block: "B", email: "ada@x.com", setCode: "BUS/13/B" },
+      { yg: "13", block: "A", email: "ben@x.com", setCode: "ART/13/A" }] };
+  const dates = [{ full: "12/09/2026", label: "Sat 12 Sep" }, { full: "03/10/2026", label: "Sat 3 Oct" }];
+  const split = () => ({ id: "t1", n: "LT A then B", sessA: "LT A", sessB: "LT B", di: [0, 1], yg: "13" });
+  const act = Object.assign(split(), { blocks: { yg: "13", A: "A", B: "B" } });
+  const W = USE({ acts: [act], staff, venues, dates, blockData: bd });
+  const dA = W.blockDetailFor("Ada@x.com", 1, "A", act), dB = W.blockDetailFor("ben@x.com", 1, "B", act);
+  t("a pupil's set in a block: subject, lead, room", dA.subject === "Psychology" && dA.lead === "TCH" && dA.venue === "PY01" && !dA.free && dA.block === "A");
+  t("no set in that block → Supported Study, with that block's own row", dB.free && dB.subject === "Y13 Supported Study" && dB.block === "B" && dB.lead === "");
+  t("an activity not switched to blocks resolves to nothing", W.blockDetailFor("ada@x.com", 1, "A", split()) === null);
+  t("…nor one whose year group has no set lists loaded", W.blockDetailFor("ada@x.com", 1, "A", Object.assign(split(), { blocks: { yg: "11", A: "A", B: "B" } })) === null);
+  const ss = W.actSessions(act, "ada@x.com", 1);
+  t("a pupil's sessions become their sets (P1 Block A · Psychology, P4 Block B · Business)",
+    ss.length === 2 && ss[0].name === "Block A · Psychology" && ss[0].venue === "PY01" && ss[0].lead === "Mx TCH" && ss[1].name === "Block B · Business" && ss[1].label === "P4");
+  t("without a pupil, the split shows as before", W.actSessions(act).map(s => s.name).join() === "LT A,LT B");
+  const whole = { n: "LT C", sessA: "LT C", sessB: "LT C", di: [1], blocks: { yg: "13", A: "A", B: "A" } };
+  t("a whole-day block is one session, from its block", (s => s.length === 1 && s[0].name === "Block A · Art" && s[0].time === "09:00–12:30")(W.actSessions(whole, "ben@x.com", 1)));
+  t("sets text for a table or letter", W.blockPupilSetsText(act, "ada@x.com", 1) === "P1 Psychology · P4 Business");
+  t("a set register holds its members only", W.blockSetHas("13", "A", "PSY/13/A", "ada@x.com") && !W.blockSetHas("13", "A", "PSY/13/A", "ben@x.com"));
+  t("the Supported Study register holds exactly those in no set of the block", W.blockSetHas("13", "B", "__FREE__", "ben@x.com") && !W.blockSetHas("13", "B", "__FREE__", "ada@x.com"));
+  t("every set in a session, then Supported Study", W.blockSessionSets(act, "A").map(s => s.set_code).join() === "ART/13/A,PSY/13/A,__FREE__");
+  t("a lead's schedule shows their set", JSON.stringify(W.blockStaffLines("TCH", "LT A", 1, "A")) === '["Block A · Psychology · PY01"]');
+  const nl = W.blockNoticeLines(act).join("\n");
+  t("the Friday notice lists each session's sets with room and lead", /P1 Block A:/.test(nl) && /Psychology — PY01 \(Mx TCH\)/.test(nl) && /P4 Block B:/.test(nl) && /Business — venue TBC \(Mx OTH\)/.test(nl));
+  // The switch
+  const sw = split();
+  const sa = { "1|OLD|A": { act: "LT A", role: "support" }, "1|TCH|A": { act: "Golf", role: "lead" }, "1|OTH|B": { act: "LT B", role: "support" },
+    "0|OLD|A": { act: "LT A", role: "support" } };
+  const WS = USE({ acts: [sw], staff, venues, dates, blockData: bd, sa });
+  const plan = WS.blockSwitchPlan(sw, { yg: "13", A: "A", B: "B" }, 20260929);
+  t("only dates still to come are switched", JSON.stringify(plan.dates) === "[1]");
+  t("set leads not yet on the session go on", plan.add.map(x => x.key).sort().join() === "1|FRL|A,1|NEW1|A", plan.add.map(x => x.key).join());
+  t("someone already on the session who leads a set stays, with nothing added", !plan.add.some(x => x.code === "OTH") && !plan.remove.some(x => x.code === "OTH"));
+  t("staff on the session who don't lead a set come off", plan.remove.map(x => x.key).join() === "1|OLD|A");
+  t("a lead already down for something else is a clash, left alone", plan.clashes.length === 1 && plan.clashes[0].code === "TCH" && plan.clashes[0].onto === "Golf");
+  t("a set or Supported Study with no lead is listed", plan.noLead.length === 1 && plan.noLead[0].sess === "B" && plan.noLead[0].set === "__FREE__");
+  WS.applyBlockSwitch(sw, plan);
+  t("switching puts the leads on as leads, and takes the others off", WS.sa["1|NEW1|A"].act === "LT A" && WS.sa["1|NEW1|A"].role === "lead" && !("1|OLD|A" in WS.sa));
+  t("…never touches past dates or the clash", WS.sa["0|OLD|A"].act === "LT A" && WS.sa["1|TCH|A"].act === "Golf");
+  t("…and marks the activity as running on blocks", sw.blocks.A === "A" && sw.blocks.B === "B" && sw.blocksUndo.added.length === 2);
+  WS.sa["1|FRL|A"] = { act: "Chess", role: "lead" };   // changed since the switch
+  const u = WS.undoBlockSwitch(sw);
+  t("switching back undoes it: leads off, staff back, a split again", !("1|NEW1|A" in WS.sa) && WS.sa["1|OLD|A"].act === "LT A" && !sw.blocks && !sw.blocksUndo);
+  t("…but leaves anything changed since", WS.sa["1|FRL|A"].act === "Chess" && u.off === 1 && u.back === 1);
+  const W2 = USE({ acts: [], staff, venues, dates, blockData: { batches: { "13": "B" }, sets: [
+    { yg: "13", block: "A", set_code: "X/13/A", subject: "X", lead: "TCH" }, { yg: "13", block: "A", set_code: "Y/13/A", subject: "Y", lead: "TCH" }], members: [] } });
+  t("one person leading two sets in a session is flagged", W2.blockSwitchPlan(split(), { yg: "13", A: "A", B: "A" }, 20260929).twoSets.some(x => x.code === "TCH" && x.subjects.length === 2));
+  t("block guesses from the name: 'A then B' split, 'THINK C' whole day",
+    JSON.stringify(W._blockGuessMapping({ n: "Y13 LEX THINK C then D", sessA: "x", sessB: "y" }, "13")) === '{"yg":"13","A":"C","B":"D"}'
+    && W._blockGuessMapping({ n: "Y11 LEX THINK C", sessA: "Y11 LEX THINK C", sessB: "Y11 LEX THINK C" }, "11").A === "C"
+    && W._blockGuessMapping({ n: "Golf", sessA: "Golf", sessB: "Golf" }, "13").A === "");
+  // The confirmed leads and venues spreadsheet
+  const parsed = { sets: [{ setCode: "PSY/13/A", yg: "13" }, { setCode: "ART/13/A", yg: "13" }, { setCode: "BUS/13/B", yg: "13" }] };
+  const L = W.parseLeadsVenuesSheets([{ name: "Y13 sets", rows: [["Title"], ["How to"], ["Mapping"],
+    ["Block", "Code", "Subject (as pupils will see it)", "iSAMS set", "iSAMS teacher", "Pupils", "LEX lead", "If not on roster: name", "Venue", "Notes"],
+    ["A", "PSY", "Psychology (A level)", "PSY/13/A", "TCH", "8", "TCH – Chair", "", "PY01", ""],
+    ["A", "ART", "", "ART/13/A", "ZZ", "4", "Not on roster", "Mx Visitor", "Studio 9", ""],
+    ["C", "GEO", "Geography", "GEO/13/C", "OTH", "5", "OTH – Other", "", "Hall", ""],
+    ["A", "SS", "Y13 Supported Study", "(pupils with no set in this block)", "—", "11", "FRL – Frl", "", "Foyer", ""],
+    ["B", "SS", "Y13 Supported Study", "(pupils with no set in this block)", "—", "18", "FRL – Frl", "", "Foyer", ""],
+    ["", "", "", "", "", "", "", "", "", "", "", "", "OTH – Other"]] }], parsed);
+  t("leads file: a set's lead code, venue and name are read", L.sets["PSY/13/A"].lead === "TCH" && L.sets["PSY/13/A"].venue === "PY01" && L.sets["PSY/13/A"].subject === "Psychology (A level)");
+  t("…a lead not on the roster is left TBC and listed", L.sets["ART/13/A"].lead === "" && L.problems.some(p => /ART\/13\/A: lead .*isn't on the LEX roster/.test(p)));
+  t("…a room that isn't a LEX venue is left TBC and listed", L.sets["ART/13/A"].venue === "" && L.problems.some(p => /Studio 9/.test(p)));
+  t("…a set not in the set lists is listed, not invented", !L.sets["GEO/13/C"] && L.problems.some(p => /GEO\/13\/C is in the leads file but not in the set lists/.test(p)));
+  t("…a set with no row is listed", L.problems.some(p => /No row for BUS\/13\/B/.test(p)));
+  t("…Supported Study rows go to their blocks", L.free["13"].A.lead === "FRL" && L.free["13"].B.venue === "Foyer");
+  t("…the side lists (dropdown sources) are ignored", L.applied === 4);
+  const ch = { sets: { "PSY/13/A": { subject: "Psychology", lead: "OTH", venue: "" }, "ART/13/A": { subject: "Art", lead: "NEW1", venue: "Hall" } },
+    free: { "13": { A: { subject: "Y13 Supported Study", lead: "", venue: "" } } } };
+  W.applyLeadsVenues(ch, L);
+  t("applying: lead and venue from the file, TBC included", ch.sets["PSY/13/A"].lead === "TCH" && ch.sets["ART/13/A"].lead === "" && ch.sets["ART/13/A"].venue === "");
+  t("…the subject name only where the file gives one", ch.sets["PSY/13/A"].subject === "Psychology (A level)" && ch.sets["ART/13/A"].subject === "Art");
+  t("…and Supported Study per block", ch.free["13"].A.lead === "FRL" && ch.free["13"].A.venue === "Foyer");
+  // Wiring in the page
+  t("every view loads the set lists after the cloud load, and keeps its copy on a failed read",
+    has("  try{await blocksLoad();}catch(_){} // v172") && has('_loadKey("blocks",null,') && has("A failed read keeps what this device already has"));
+  t("My LEX passes the pupil and date to the session helper", has("return actSessions(row.act,row.ne,row.di).map("));
+  t("the public timetable shows the pupil's own sets", has("actSessions(actObj,ne,di).some(s2=>s2.block)"));
+  t("the Friday notice lists sets", has("const _bl=blockNoticeLines(act);"));
+  t("the parent-letter export adds each pupil's sets", has("blockPupilSetsText(findActByName_exact(n),r.ne,di)"));
+  t("the Staff Portal offers a register per set and filters it",
+    has('value:"set:"+[a.blocks.yg,actBlockFor(a,S),st.set_code,sess||"AB",comp].join("|")') && has("blockSetHas(blkSet.yg,blkSet.block,blkSet.setCode,p.email)"));
+  t("…and a lead's schedule shows their set", has("blockStaffLines(s.c,n,rowDi,rowSess)"));
+  t("the admin register shows each pupil's sets", has('if(act&&act.blocks)hdrCols.push("Sets");'));
+  t("staff on the session who don't lead a set stay on unless Gideon ticks the box", has("const p2=off.checked?plan:Object.assign({},plan,{remove:[]});")
+    && has("applyBlockSwitch(a,p2);"));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 S("Real data (from the supplied backup)");
 if (!skipIf(!BK, "no backup supplied — real-data checks")) {
   t("every roster house is normalised",
@@ -1670,6 +2075,17 @@ if (!skipIf(!BK, "no backup supplied — real-data checks")) {
   console.log(`  note: ${changed} of ${R1.res.length} allocation row(s) differ from the backup's stored results; ` +
     `${bakers.length} A1 Bake-Off chooser(s) with Bake-Off per-date entries`);
 
+  // v170: removing anyone on this roster, as of the backup's day, never clears a past entry.
+  {
+    const bd = +(BK._createdAt || "").slice(0, 10).replace(/-/g, "");
+    const Wl = LVR({ dates: BK.dates, staff: JSON.parse(JSON.stringify(BK.staff)), acts: JSON.parse(JSON.stringify(BK.acts)), sa: JSON.parse(JSON.stringify(BK.sa || {})) });
+    let fut = 0, past = 0, leads = 0, badFuture = [];
+    BK.staff.forEach(s => { const p = Wl.staffRemovalPlan(s.c, bd); fut += p.future.length; past += p.past.length; leads += p.leads.length;
+      p.future.forEach(k => { const d = BK.dates[parseInt(k, 10)], q = core.parseDateDmy(d && d.full); if (!(q[0] * 10000 + q[1] * 100 + q[2] > bd)) badFuture.push(k); }); });
+    t("removal on the real roster only ever clears dates after today", badFuture.length === 0, badFuture.slice(0, 5).join(","));
+    console.log(`  note: across all ${BK.staff.length} staff — ${past} past calendar entries a v169 removal would have deleted are kept; ${fut} upcoming entries and ${leads} lead fields would be offered for clearing`);
+  }
+
   // v169 §1: the Saturday checks over the live backup, as of the day the backup was taken.
   const bday = (BK._createdAt || "").slice(0, 10).replace(/-/g, "");
   const ck = CHK({ dates: BK.dates, acts: BK.acts, staff: BK.staff, res: BK.allocRes, pupils: BK.pupils, fd: BK.formData,
@@ -1709,6 +2125,10 @@ S("Structural integrity");
 (async () => {
   try { await p0Tests(); }
   catch (e) { fail++; failures.push("v169 P0 → the simulation threw: " + e.message); console.log("  FAIL  the P0 simulation threw — " + (e.stack || e)); }
+  try { await blockTests(); }
+  catch (e) { fail++; failures.push("v171 blocks → the tests threw: " + e.message); console.log("  FAIL  the block tests threw — " + (e.stack || e)); }
+  try { blockUseTests(); }
+  catch (e) { fail++; failures.push("v172 blocks → the tests threw: " + e.message); console.log("  FAIL  the block-use tests threw — " + (e.stack || e)); }
   console.log("\n" + "═".repeat(60));
   console.log(`${pass} passed · ${fail} failed · ${skip} skipped`);
   if (failures.length) { console.log("\nFailures:"); failures.forEach(f => console.log("  • " + f)); }

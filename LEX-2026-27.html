@@ -965,7 +965,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v169';
+const CURRENT_VERSION = 'v172';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -1680,6 +1680,88 @@ function saSet(key,actName,role){
 }
 // Extract staff code from any sa key format ("di|code" or "di|code|A")
 function saCode(key){return key.split("|")[1];}
+// v170: a lead picker from the roster. The P1/P4 lead fields in the Split panel were free
+// text, which is how a surname and a leaver's code got in as leads (28 Sept). A stored code
+// that isn't on the roster stays visible and marked, rather than showing as "TBC" while the
+// data still holds it — the main Lead dropdown did exactly that, so bad codes went unseen.
+function _staffCodeSelect(value,onPick,width){
+  const cur=value||"";
+  const known=staff.some(s=>s.c===cur);
+  const sel=h("select",{style:{width:width||"75px",color:cur&&!known?"var(--red)":""},
+    title:cur&&!known?cur+" is not on the staff roster — pick someone, or TBC":"",
+    onChange:e=>onPick(e.target.value)});
+  sel.appendChild(h("option",{value:"",selected:!cur},"TBC"));
+  if(cur&&!known)sel.appendChild(h("option",{value:cur,selected:true},cur+" — not on roster"));
+  sortedStaff(staff).forEach(s=>sel.appendChild(h("option",{value:s.c,selected:s.c===cur},s.n.split(" ")[0]+" ("+s.c+")")));
+  return sel;
+}
+// v170: what removing a staff member would leave pointing at a code nobody has. Before v170,
+// removal deleted EVERY staff-calendar entry for the code — past Saturdays included, so the
+// record of what they ran went too (in the cloud as well, via lex_sa) — and left their leads
+// and additional-staff tags in place, which the Saturday checks then list as unknown codes.
+// Only dates after today are "upcoming": today's entries are kept, so a leaver removed on a
+// Saturday afternoon keeps that morning's record. A date that can't be read is kept too.
+function staffRemovalPlan(code,todayYmd){
+  const t=todayYmd||_todayYmd();
+  const plan={code,leads:[],tags:[],future:[],past:[]};
+  acts.forEach(a=>{
+    [["lead","lead"],["sessALead","P1 lead"],["sessBLead","P4 lead"]].forEach(([f,label])=>{if(a[f]===code)plan.leads.push({act:a,field:f,label});});
+    if((a.staff||[]).includes(code))plan.tags.push({act:a});
+  });
+  Object.keys(sa).forEach(k=>{
+    if(saCode(k)!==code)return;
+    const di=parseInt(k,10),d=dates[di],p=d?parseDateDmy(d.full):[9999];
+    const ymd=p[0]===9999?null:p[0]*10000+p[1]*100+p[2];
+    (ymd!==null&&ymd>t?plan.future:plan.past).push(k);
+  });
+  return plan;
+}
+// Remove from the roster; with clearLinks, also clear the leads, tags and upcoming calendar
+// entries the plan found. Past entries are never touched either way.
+function applyStaffRemoval(plan,clearLinks){
+  const i=staff.findIndex(s=>s.c===plan.code);if(i>=0)staff.splice(i,1);
+  if(!clearLinks)return;
+  plan.leads.forEach(l=>{if(l.act[l.field]===plan.code)l.act[l.field]="";});
+  plan.tags.forEach(t=>{t.act.staff=(t.act.staff||[]).filter(c=>c!==plan.code);});
+  plan.future.forEach(k=>{delete sa[k];});
+}
+function confirmStaffRemoval(s){
+  const plan=staffRemovalPlan(s.c);
+  document.querySelectorAll(".staff-remove-overlay").forEach(x=>x.remove());
+  const ov=h("div",{className:"staff-remove-overlay",style:{position:"fixed",top:"0",left:"0",right:"0",bottom:"0",zIndex:"1000",
+    background:"rgba(0,0,0,.35)",display:"flex",alignItems:"center",justifyContent:"center"}});
+  const box=h("div",{className:"card card-pad",style:{maxWidth:"520px",width:"92%",background:"var(--surface)",maxHeight:"85vh",overflow:"auto"}});
+  const esc=e=>{if(e.key==="Escape")close();};
+  function close(){ov.remove();document.removeEventListener("keydown",esc);}
+  function go(clear){
+    close();
+    applyStaffRemoval(plan,clear);
+    logAction("STAFF_REMOVED",s.c+" ("+s.n+")"+(clear?": cleared "+plan.leads.length+" lead(s), "+plan.tags.length+" tag(s), "+plan.future.length+" upcoming calendar entr"+(plan.future.length===1?"y":"ies"):": links left in place")+"; "+plan.past.length+" past entr"+(plan.past.length===1?"y":"ies")+" kept");
+    saveAll();toast(s.n+" removed");rebuildAdminPreserveScroll();
+  }
+  const links=plan.leads.length+plan.tags.length+plan.future.length;
+  const dl=di=>(dates[di]&&(dates[di].label||dates[di].full))||("date "+(di+1));
+  const list=(title,items)=>items.length?h("div",{style:{marginBottom:"8px"}},h("div",{style:{fontWeight:600,fontSize:"12px"}},title+" ("+items.length+")"),
+    h("div",{style:{fontSize:"11px",color:"var(--text2)",lineHeight:1.6,maxHeight:"110px",overflow:"auto"}},items.join(" · "))):null;
+  box.appendChild(h("div",{style:{fontWeight:700,fontSize:"14px",marginBottom:"8px"}},"Remove "+s.n+" ("+s.c+")?"));
+  if(links){
+    box.appendChild(h("div",{style:{fontSize:"12px",marginBottom:"10px",lineHeight:1.5}},"They are still down for these. Left in place, they show under Allocation Report → Before each Saturday as a code not on the roster."));
+    box.appendChild(list("Lead",plan.leads.map(l=>l.act.n+(l.field==="lead"?"":" ("+l.label+")"))));
+    box.appendChild(list("Additional staff on",plan.tags.map(t=>t.act.n)));
+    box.appendChild(list("Staff calendar, dates to come",plan.future.slice().sort((x,y)=>parseInt(x,10)-parseInt(y,10)).map(k=>dl(parseInt(k,10))+(k.split("|")[2]?" "+(k.split("|")[2]==="A"?"P1":"P4"):"")+": "+(saGet(k)||"—"))));
+  } else box.appendChild(h("div",{style:{fontSize:"12px",marginBottom:"10px"}},"They aren't a lead or additional staff on any activity, and have nothing on the staff calendar for dates to come."));
+  box.appendChild(h("div",{style:{fontSize:"11px",color:"var(--text3)",marginBottom:"12px"}},plan.past.length?plan.past.length+" staff-calendar entr"+(plan.past.length===1?"y":"ies")+" from past dates (and today) will be kept as the record.":"No past staff-calendar entries."));
+  const row=h("div",{style:{display:"flex",gap:"8px",flexWrap:"wrap"}});
+  if(links){
+    row.appendChild(h("button",{className:"btn btn-danger btn-sm",onClick:()=>go(true)},"Remove and clear these"));
+    row.appendChild(h("button",{className:"btn btn-ghost btn-sm",onClick:()=>go(false)},"Remove, leave these"));
+  } else row.appendChild(h("button",{className:"btn btn-danger btn-sm",onClick:()=>go(false)},"Remove"));
+  row.appendChild(h("button",{className:"btn btn-ghost btn-sm",onClick:close},"Cancel"));
+  box.appendChild(row);
+  document.addEventListener("keydown",esc);
+  ov.addEventListener("click",e=>{if(e.target===ov)close();});
+  ov.appendChild(box);document.body.appendChild(ov);
+}
 // Rename a staff code everywhere: sa map, activity lead/staff/sessALead/sessBLead, priorYTD
 function renameStaffCode(oldCode, newCode){
   if(!oldCode||!newCode||oldCode===newCode)return 0;
@@ -3012,6 +3094,7 @@ async function loadFromSupabase(){
   if(ovOverviewSummary)_ovOverviewLastSeen=ovOverviewSummary; // Wave 0
   try{_saLastSeen=await tableSummary("lex_sa");}catch(_){} // Wave 1b: keep poll baseline fresh
   if(blobMaxStamp!==null)_blobLastSeen=blobMaxStamp;
+  try{await blocksLoad();}catch(_){} // v172: set lists, for every view (kept on a failed read)
   syncStatus="online";lastSyncTime=new Date();
   // v66: retry any per-row override deletes that never confirmed.
   drainPendingOvrDeletes();
@@ -3496,17 +3579,20 @@ function isSplitAct(a){return a&&a.sessA!==a.sessB;}
 // Times are derived: they are universal (whole day 09:00-12:30; split A 09:00-10:30,
 // B 11:00-12:30), and the stored sessATime/sessBTime fields are only partly filled in.
 const LEX_TIME_FULL="09:00–12:30", LEX_TIME_A="09:00–10:30", LEX_TIME_B="11:00–12:30";
-function actSessions(act){
+function actSessions(act,email,di){
   if(!act)return [];
   const venueOf=v=>(v&&v!=="TBC")?v:"";
   const leadName=c=>{if(!c)return "";const st=staff.find(s2=>s2.c===c);return st?st.n:c;};
+  // v172: given a pupil and a date, a block activity's sessions are that pupil's own sets.
+  const blk=(S,time,label)=>{const d=email&&act.blocks?blockDetailFor(email,di,S,act):null;
+    return d?{label,name:"Block "+d.block+" · "+d.subject,venue:venueOf(d.venue),lead:leadName(d.lead),time,block:d}:null;};
   if(!isSplitAct(act)){
-    return [{label:"",name:act.n,venue:venueOf(act.v),lead:leadName(act.lead),time:LEX_TIME_FULL}];
+    return [blk("A",LEX_TIME_FULL,"")||{label:"",name:act.n,venue:venueOf(act.v),lead:leadName(act.lead),time:LEX_TIME_FULL}];
   }
   return [
-    {label:"P1",name:act.sessA||act.n,venue:venueOf(act.sessAVenue)||venueOf(act.v),
+    blk("A",LEX_TIME_A,"P1")||{label:"P1",name:act.sessA||act.n,venue:venueOf(act.sessAVenue)||venueOf(act.v),
      lead:leadName(act.sessALead||act.lead),time:LEX_TIME_A},
-    {label:"P4",name:act.sessB||act.n,venue:venueOf(act.sessBVenue)||venueOf(act.v),
+    blk("B",LEX_TIME_B,"P4")||{label:"P4",name:act.sessB||act.n,venue:venueOf(act.sessBVenue)||venueOf(act.v),
      lead:leadName(act.sessBLead||act.lead),time:LEX_TIME_B}
   ];
 }
@@ -3601,6 +3687,7 @@ function loadLocal(){
   _loadKey("snapshots",null,v=>{snapshots=v;});
   _loadKey("consentmap",null,v=>{consentMap=v;});
   _loadKey("overview",null,v=>{overviewData=v;});
+  _loadKey("blocks",null,v=>{if(v&&Array.isArray(v.sets))blockData=Object.assign({loaded:false,error:null,batches:{},sets:[],members:[]},v);}); // v172
   try{deduplicateActs();}catch(e){console.warn("deduplicateActs failed",e);}
   try{normalisePupils();}catch(e){console.warn("normalisePupils failed",e);}
 }
@@ -4548,6 +4635,7 @@ function _renderAdminSubTo(container){
   else if(adminSub==="help")renderFormGuide(container);
   else if(adminSub==="venues")renderVenues(container);
   else if(adminSub==="feedback")renderFeedbackAdmin(container); // v159
+  else if(adminSub==="blocks")renderAdminBlocks(container); // v171
 }
 
 function rebuildAdminPreserveScroll(){
@@ -7396,7 +7484,8 @@ function renderResultsByDate(el){
         :[{name:p2.p1Name,email:p2.p1Email},{name:p2.p2Name,email:p2.p2Email}];
       const c1=cts[0]||{},c2=cts[1]||{};
       if(!c1.email&&!c2.email)noContact++;
-      const cells=_bdDis.map(di=>cachedAlloc(r.ne,di)||"");
+      const cells=_bdDis.map(di=>{const n=cachedAlloc(r.ne,di)||"";const bt=n?blockPupilSetsText(findActByName_exact(n),r.ne,di):""; // v172
+        return bt?n+" ("+bt+")":n;});
       out.push([r.surname,r.forename,p2.pref||"",displayYg(r.yearGroup),r.house,r.tutor,p2.email||r.ne,
         c1.name||"",c1.email||"",c2.name||"",c2.email||"",...cells].map(esc).join(","));
     });
@@ -9906,6 +9995,7 @@ function renderRegisters(el){
     const tw=h("div",{style:{overflow:"auto"}});
     const t=h("table",null);
     const hdrCols=["#","Surname","Forename","Tutor","House","Year"];
+    if(act&&act.blocks)hdrCols.push("Sets"); // v172
     if(showA)hdrCols.push("P1 (9am)");
     if(showB)hdrCols.push("P4 (11am)");
     t.appendChild(h("thead",null,h("tr",null,...hdrCols.map(x=>h("th",null,x)))));
@@ -9939,6 +10029,7 @@ function renderRegisters(el){
         h("td",null,p.house||"—"),
         h("td",null,displayYg(p.yg)||"—")
       );
+      if(act&&act.blocks)tr2.appendChild(h("td",{style:{fontSize:"10px"}},blockPupilSetsText(act,p.email,di)||"—")); // v172
       if(showA)tr2.appendChild(h("td",null,mkAttSel(p,"a",p.attA)));
       if(showB)tr2.appendChild(h("td",null,_offsite&&showA?h("span",{style:{fontSize:"10px",color:p.attB==="present"?"var(--green)":p.attB==="absent"?"var(--red)":"var(--text3)",fontWeight:600}},p.attB==="present"?"✓ auto":p.attB==="absent"?"✗ auto":p.attB||"—"):mkAttSel(p,"b",p.attB)));
       if(_offsite&&showA&&showB)tr2.appendChild(h("td",{style:{fontSize:"8px",color:"var(--text3)",verticalAlign:"middle"}},"🔗"));
@@ -12448,7 +12539,11 @@ function generateFridayNotice(di){
     // notice lists both rather than collapsing them into one venue for the morning.
     const note=act.notes||"";
     const ss=actSessions(act);
-    if(ss.length>1){
+    const _bl=blockNoticeLines(act); // v172: a block activity lists every set, room and lead
+    if(_bl.length){
+      lines.push(act.n+(note?" — "+note:""));
+      _bl.forEach(l=>lines.push(l));
+    }else if(ss.length>1){
       lines.push(act.n+(note?" — "+note:""));
       ss.forEach(s2=>lines.push("    "+s2.label+" "+s2.name+" — "+(s2.venue||"venue TBC")+
         " — "+s2.time+" ("+(s2.lead||"staff TBC")+")"));
@@ -13052,18 +13147,18 @@ function renderAdmin(el){
   // v64: grouped by purpose — Setup, then Operations, then Reference
   const _subTabGroups=[
     // Setup
-    [{id:"activities",l:"Activities"},{id:"staff",l:"Staff"},{id:"dates",l:"Dates"},{id:"pupils",l:"👥 Pupils"},{id:"parents",l:"👨‍👩‍👧 Parents"}],
+    [{id:"activities",l:"Activities"},{id:"staff",l:"Staff"},{id:"dates",l:"Dates"},{id:"pupils",l:"👥 Pupils"},{id:"parents",l:"👨‍👩‍👧 Parents"},{id:"blocks",l:"🧱 Blocks"}],
     // Operations
-    [{id:"bulk",l:"📥 Bulk Import"},{id:"term",l:"🔄 New Term"},{id:"sync",l:"☁ Cloud Sync"},{id:"feedback",l:"⭐ Pupil Feedback"}],
+    [{id:"bulk",l:"📥 Bulk Import"},{id:"term",l:"🔄 New Term"},{id:"sync",l:"☁ Cloud Sync"},{id:"feedback",l:"⭐ Feedback",t:"Pupil Feedback"}],
     // Reference
-    [{id:"weighting",l:"⚖ Weighting"},{id:"log",l:"📋 Activity Log"},{id:"consent",l:"✓ Consent Audit"},{id:"help",l:"📖 Form Guide"}]
+    [{id:"weighting",l:"⚖ Weighting"},{id:"log",l:"📋 Activity Log"},{id:"consent",l:"✓ Consent",t:"Consent Audit"},{id:"help",l:"📖 Form Guide"}]
   ];
   _subTabGroups.forEach((group,gi)=>{
     if(gi>0)subTabs.appendChild(h("span",{style:{width:"1px",height:"22px",background:"var(--border)",margin:"0 4px"}}));
     group.forEach(st=>{
       subTabs.appendChild(h("button",{
         className:"btn btn-sm "+(adminSub===st.id?"btn-primary":"btn-ghost"),
-        "data-sub":st.id,
+        "data-sub":st.id,title:st.t||"",   // v171: two labels shortened so the tabs, with Blocks, stay on one row at 1366
         onClick:()=>{adminSub=st.id;rebuildAdmin();}
       },st.l));
     });
@@ -13208,9 +13303,8 @@ function renderAdminActs(el){
     tr.appendChild(h("td",null,mk("yg","55px")));
     tr.appendChild(h("td",null,mk("cap","60px","number")));
     // Lead dropdown
-    const ls=h("select",{"data-fkey":a.id+"|lead",style:{width:"75px"},onChange:e=>{a.lead=e.target.value;syncRosterToCalendar();rebuildAdminPreserveScroll();}});
-    ls.appendChild(h("option",{value:""},"TBC"));
-    sortedStaff(staff).forEach(s=>{const o=h("option",{value:s.c},s.n.split(" ")[0]+" ("+s.c+")");if(a.lead===s.c)o.selected=true;ls.appendChild(o);});
+    const ls=_staffCodeSelect(a.lead,v=>{a.lead=v;syncRosterToCalendar();rebuildAdminPreserveScroll();},"75px"); // v170
+    ls.setAttribute("data-fkey",a.id+"|lead");
     // Additional staff — inline multi-tag picker
     // v168: lead, additional-staff tags and "+ add" sit on one line (they were stacked four deep).
     const rosterCell=h("td",null);
@@ -13306,16 +13400,23 @@ function renderAdminActs(el){
             }});
           row.appendChild(inp);return row;
         };
+        // v170: P1/P4 lead from the roster (these were free text).
+        const mkLeadSplit=(label,field)=>{
+          const row=h("div",{style:{marginBottom:"8px"}});
+          row.appendChild(h("label",{className:"field-label"},label));
+          row.appendChild(_staffCodeSelect(a[field],v=>{a[field]=v;saveAll();_updSplitSummary();},"100%"));
+          return row;
+        };
         const grid=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}});
         const colA=h("div",null);colA.appendChild(h("div",{style:{fontWeight:600,fontSize:"11px",color:"var(--accent)",marginBottom:"6px"}},"P1 (9am)"));
         colA.appendChild(mkSplit("Name","sessA","e.g. Pilates"));
         colA.appendChild(mkSplit("Venue","sessAVenue","e.g. Library"));
-        colA.appendChild(mkSplit("Lead code","sessALead","e.g. FD"));
+        colA.appendChild(mkLeadSplit("Lead","sessALead"));
         colA.appendChild(mkSplit("Time","sessATime","09:15–10:45"));
         const colB=h("div",null);colB.appendChild(h("div",{style:{fontWeight:600,fontSize:"11px",color:"var(--purple)",marginBottom:"6px"}},"P4 (11am)"));
         colB.appendChild(mkSplit("Name","sessB","e.g. Embroidery"));
         colB.appendChild(mkSplit("Venue","sessBVenue","e.g. DT01"));
-        colB.appendChild(mkSplit("Lead code","sessBLead","e.g. JLB"));
+        colB.appendChild(mkLeadSplit("Lead","sessBLead"));
         colB.appendChild(mkSplit("Time","sessBTime","11:00–12:30"));
         grid.appendChild(colA);grid.appendChild(colB);panel.appendChild(grid);
         panel.appendChild(h("div",{style:{fontSize:"9px",fontWeight:700,color:"var(--text3)",margin:"10px 0 0",letterSpacing:"0.4px"}},"CURRENT CONFIG (auto-saved)"));
@@ -13440,12 +13541,7 @@ function renderAdminStaff(el){
       h("td",null,h("input",{value:s.n,style:{width:"160px"},onInput:e=>{s.n=e.target.value;saveAll();}})),
       h("td",null,h("input",{value:s.r||"",style:{width:"90px"},onInput:e=>{s.r=e.target.value;saveAll();}})),
       h("td",null,h("input",{value:s.email||"",placeholder:"surname@clayesmore.com",style:{width:"200px",fontSize:"11px"},onInput:e=>{s.email=e.target.value.trim();saveAll();}})),
-      h("td",null,(()=>{const sc=s.c,sn=s.n;return h("button",{className:"btn btn-danger btn-xs",onClick:()=>{
-        if(!confirm("Remove "+sn+" from staff list?"))return;
-        staff.splice(staff.indexOf(s),1);
-        Object.keys(sa).forEach(k=>{if(saCode(k)===sc)delete sa[k];});
-        saveAll();toast(sn+" removed");rebuildAdminPreserveScroll();
-      }},"✕");})())
+      h("td",null,h("button",{className:"btn btn-danger btn-xs",onClick:()=>confirmStaffRemoval(s)},"✕")) // v170
     ));
   });
   st2.appendChild(sb);sw.appendChild(st2);el.appendChild(sw);
@@ -14505,6 +14601,11 @@ function renderPublicTimetable(){
           const venueCell=h("td",{style:{padding:"10px 14px",fontSize:"12px"}});
           if(isUnassigned||!actName){
             venueCell.appendChild(h("span",{style:{color:"var(--text3)"}},"—"));
+          } else if(actObj&&actObj.blocks&&actSessions(actObj,ne,di).some(s2=>s2.block)){
+            // v172: block timetable — the pupil's own set, room and lead for each session.
+            actSessions(actObj,ne,di).forEach(s2=>venueCell.appendChild(h("div",{style:{fontSize:"11px",marginTop:"2px"}},
+              s2.label?h("span",{style:{color:s2.label==="P1"?"var(--accent)":"var(--purple)",fontWeight:600}},s2.label+" "):null,
+              h("span",{style:{fontWeight:600}},s2.name),h("span",{style:{color:"var(--text2)"}}," · "+(s2.venue||"TBC")+(s2.lead?" · "+s2.lead:"")))));
           } else if(hasSplit){
             const vA=actObj?.sessAVenue||(actObj?.v&&actObj.v!=="TBC"?actObj.v:"");
             const vB=actObj?.sessBVenue||"";
@@ -14912,6 +15013,742 @@ function renderFeedbackPrompt(pupil,rows,isPreview){
   });
   return box;
 }
+// ═══════════════════════════════════════════════
+// v171: BLOCK TIMETABLE — SET LISTS (brief §9, part 1: import and review)
+// ═══════════════════════════════════════════════
+// On LEX THINK Saturdays each pupil goes to their own subject set for the block, not one
+// activity per subject combination (about 49 activities for two Y13 Saturdays — ruled out).
+// This part imports the iSAMS set lists and stores them; nothing pupil-facing reads them yet.
+// Per-row tables, per the architecture rule: many people never write these at once, but an
+// import replaces a year group's whole membership, and that switch must be all-or-nothing.
+// Every import writes a new batch — members first, then the sets rows, which are what make a
+// batch current (the newest batch in lex_block_sets for that year group). A failure part-way
+// leaves the previous import in force; old batches are deleted only after the switch.
+const BLOCK_SETUP_SQL=`-- LEX block timetable (v171). Run once in the Supabase SQL editor for this project.
+create table if not exists public.lex_block_sets (
+  pfx text not null,
+  yg text not null,
+  batch text not null,
+  block text not null,
+  set_code text not null,
+  subject_code text not null default '',
+  subject text not null default '',
+  lead text not null default '',
+  venue text not null default '',
+  teacher text not null default '',
+  updated_at timestamptz not null default now(),
+  primary key (pfx, yg, batch, block, set_code)
+);
+create table if not exists public.lex_block_members (
+  pfx text not null,
+  yg text not null,
+  batch text not null,
+  block text not null,
+  email text not null,
+  set_code text not null,
+  primary key (pfx, yg, batch, block, email)
+);
+alter table public.lex_block_sets enable row level security;
+alter table public.lex_block_members enable row level security;
+drop policy if exists "lex_block_sets all" on public.lex_block_sets;
+create policy "lex_block_sets all" on public.lex_block_sets for all to anon, authenticated using (true) with check (true);
+drop policy if exists "lex_block_members all" on public.lex_block_members;
+create policy "lex_block_members all" on public.lex_block_members for all to anon, authenticated using (true) with check (true);
+grant select, insert, update, delete on public.lex_block_sets to anon, authenticated;
+grant select, insert, update, delete on public.lex_block_members to anon, authenticated;`;
+// Names offered for iSAMS subject codes on first import; every one is shown for checking
+// before anything is saved, and a name saved once is offered again next time.
+const BLOCK_SUBJECT_NAMES={ART:"Art",BIO:"Biology",BUS:"Business",CHEM:"Chemistry",DT:"Design & Technology",ECON:"Economics",
+  ENG:"English",GEO:"Geography",HIS:"History",HOSP:"Hospitality",HSC:"Health & Social Care",MATH:"Maths",PHO:"Photography",
+  PHY:"Physics",PSY:"Psychology",SPA:"Spanish",SPO:"Sport"};
+const BLOCK_FREE="__FREE__";   // the "not in a set" row for a year group (block "*")
+
+// ── Reading .xlsx without a library ──
+// An .xlsx is a zip of XML files. Browsers (and Node, for the tests) can inflate zip entries
+// natively (DecompressionStream), so the set lists are read here rather than by loading a
+// spreadsheet library from a CDN — the tests then run this exact code over the real file.
+async function _unzipXmlEntries(buf){
+  const u8=new Uint8Array(buf),dv=new DataView(u8.buffer,u8.byteOffset,u8.byteLength),dec=new TextDecoder("utf-8");
+  let eocd=-1;
+  for(let i=u8.length-22;i>=Math.max(0,u8.length-65557);i--){if(dv.getUint32(i,true)===0x06054b50){eocd=i;break;}}
+  if(eocd<0)throw new Error("This isn't an Excel (.xlsx) file.");
+  const n=dv.getUint16(eocd+10,true);let p=dv.getUint32(eocd+16,true);
+  const out={};
+  for(let k=0;k<n;k++){
+    if(dv.getUint32(p,true)!==0x02014b50)throw new Error("The .xlsx file is damaged.");
+    const method=dv.getUint16(p+10,true),csize=dv.getUint32(p+20,true),nlen=dv.getUint16(p+28,true);
+    const xlen=dv.getUint16(p+30,true),clen=dv.getUint16(p+32,true),off=dv.getUint32(p+42,true);
+    const name=dec.decode(u8.subarray(p+46,p+46+nlen));
+    p+=46+nlen+xlen+clen;
+    if(!/\.(xml|rels)$/i.test(name))continue;
+    // Sizes come from the central directory: the local header's may be zero (streamed zips).
+    const start=off+30+dv.getUint16(off+26,true)+dv.getUint16(off+28,true);
+    const data=u8.subarray(start,start+csize);
+    let raw;
+    if(method===0)raw=data;
+    else if(method===8)raw=new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
+    else throw new Error("The .xlsx file uses a compression LEX can't read ("+method+").");
+    out[name]=dec.decode(raw);
+  }
+  return out;
+}
+function _xmlUnescape(s){
+  return String(s).replace(/&(amp|lt|gt|quot|apos|#x[0-9a-fA-F]+|#\d+);/g,(m,e)=>e==="amp"?"&":e==="lt"?"<":e==="gt"?">":e==="quot"?'"':e==="apos"?"'"
+    :String.fromCodePoint(e[1]==="x"||e[1]==="X"?parseInt(e.slice(2),16):parseInt(e.slice(1),10)));
+}
+// The text of an <si> or inline string: its <t> runs, without phonetic hints or empty <t/>.
+function _xmlRunsText(x){
+  return _xmlUnescape(String(x).replace(/<rPh\b[\s\S]*?<\/rPh>/g,"").replace(/<t\b[^>]*\/>/g,"")
+    .split(/<t\b[^>]*>/).slice(1).map(s=>s.split("</t>")[0]).join(""));
+}
+// [{name, rows:[[text,…],…]}], one per sheet in workbook order. Every cell comes back as text.
+async function readXlsxSheets(buf){
+  const f=await _unzipXmlEntries(buf);
+  const wb=f["xl/workbook.xml"];if(!wb)throw new Error("This isn't an Excel workbook.");
+  const rels={};
+  (f["xl/_rels/workbook.xml.rels"]||"").replace(/<Relationship\b[^>]*>/g,t=>{const id=/\bId="([^"]*)"/.exec(t),tg=/\bTarget="([^"]*)"/.exec(t);if(id&&tg)rels[id[1]]=tg[1];return t;});
+  const ss=[];
+  (f["xl/sharedStrings.xml"]||"").replace(/<si>([\s\S]*?)<\/si>/g,(m,si)=>{ss.push(_xmlRunsText(si));return m;});
+  const sheets=[];
+  wb.replace(/<sheet\b[^>]*>/g,t=>{const nm=/\bname="([^"]*)"/.exec(t),rid=/\br:id="([^"]*)"/.exec(t);if(nm&&rid)sheets.push({name:_xmlUnescape(nm[1]),rid:rid[1]});return t;});
+  return sheets.map(s=>{
+    const tg=rels[s.rid]||"";const path=tg.startsWith("/")?tg.slice(1):"xl/"+tg.replace(/^\.\//,"");
+    const rows=[];
+    (f[path]||"").replace(/<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g,(m,ra,body)=>{
+      const rn=/\br="(\d+)"/.exec(ra);if(rn)while(rows.length<parseInt(rn[1],10)-1)rows.push([]);
+      const row=[];
+      (body||"").replace(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g,(m2,ca,cb)=>{
+        const ref=/\br="([A-Z]+)\d+"/.exec(ca),ty=/\bt="([^"]*)"/.exec(ca),v=/<v>([\s\S]*?)<\/v>/.exec(cb||"");
+        let col=row.length;if(ref){col=0;for(const ch of ref[1])col=col*26+ch.charCodeAt(0)-64;col--;}
+        const text=ty&&ty[1]==="s"?(v?ss[parseInt(v[1],10)]||"":""):ty&&ty[1]==="inlineStr"?_xmlRunsText(cb||""):(v?_xmlUnescape(v[1]):"");
+        while(row.length<col)row.push("");row[col]=text;return m2;});
+      rows.push(row);return m;});
+    return {name:s.name,rows};
+  });
+}
+
+// ── Set lists: parse, match, compare ──
+// iSAMS set-list export, one sheet per set: the first cell reads
+// "BUS/13/A - Set List (BUS/13/A) - Title SURNAME (CODE)" (subject, year, block, teacher code);
+// a header row names "Surname" and "Forename (Firstname)"; then one pupil per row; then footer
+// rows starting "Total:" and "Average Age:". Only surname and forename are read. Date of Birth
+// and every other column are never looked at, and nothing here is saved but the match.
+function parseSetListSheets(sheets){
+  const sets=[],problems=[];
+  (sheets||[]).forEach(sh=>{
+    const rows=(sh.rows||[]).map(r=>(r||[]).map(c=>String(c==null?"":c).trim()));
+    const title=((rows.find(r=>r.some(Boolean))||[]).find(Boolean))||"";
+    // v172: the set code is the one in "Set List (…)": the leading label can differ — Y11's
+    // Supported Study sets read "SS/11/BLOCK A - Set List (SS/11/BA)". The block is the letter
+    // after the year, unless the label spells it out ("BLOCK A").
+    const lm=/Set List\s*\(([^()]+)\)/i.exec(title);
+    const code=(lm?lm[1]:title.split(/\s/)[0]).trim();
+    const m=/^([A-Za-z0-9]+)\/(\d{1,2})\/([A-Za-z])[A-Za-z0-9]*$/.exec(code);
+    if(!m){problems.push({sheet:sh.name,why:"its first cell isn't an iSAMS set-list title"});return;}
+    const bm=/\bBLOCK\s+([A-Za-z])\b/i.exec(title.split(" - ")[0]);
+    const hi=rows.findIndex(r=>r.some(c=>/^surname$/i.test(c)));
+    const iS=hi<0?-1:rows[hi].findIndex(c=>/^surname$/i.test(c)),iF=hi<0?-1:rows[hi].findIndex(c=>/^forename/i.test(c));
+    if(iS<0||iF<0){problems.push({sheet:sh.name,why:"no Surname / Forename header row"});return;}
+    const tm=/\(([^()\/]+)\)\s*$/.exec(title);
+    const pupils=[];
+    rows.slice(hi+1).forEach(r=>{
+      if(/^(total|average)\b/i.test(r[0]||""))return;
+      const s=r[iS]||"",f=r[iF]||"";if(!s&&!f)return;
+      const fm=/^(.*?)\s*(?:\(([^()]*)\))?$/.exec(f);
+      pupils.push({surname:s,forename:(fm[1]||"").trim(),alt:(fm[2]||"").trim()});
+    });
+    sets.push({sheet:sh.name,setCode:code.toUpperCase(),subjectCode:m[1].toUpperCase(),yg:String(parseInt(m[2],10)),
+      block:(bm?bm[1]:m[3]).toUpperCase(),teacher:tm?tm[1].trim():"",pupils});
+  });
+  return {sets,problems};
+}
+function _nameKey(s){return String(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^a-z]/g,"");}
+function _pupilYgNum(p){return (String((p&&p.yg)||"").match(/\d+/)||[""])[0];}
+// Match each set-list row to one roster pupil in that year group: same surname, and forename
+// or preferred name equal to either the forename or the bracketed first name. `manual` holds
+// choices made on the review screen for rows that didn't match: "setCode|row index" → email,
+// or "" to leave the row out. A pupil in two sets of one block makes the import unusable.
+function matchSetPupils(parsed,manual){
+  const man=manual||{};
+  const out={members:[],unmatched:[],clashes:[]};
+  const inBlock={};
+  parsed.sets.forEach(st=>{
+    st.pupils.forEach((r,i)=>{
+      const key=st.setCode+"|"+i;
+      let email=null,cands=[];
+      if(Object.prototype.hasOwnProperty.call(man,key)){email=man[key]||null;if(!email)return;}
+      else{
+        const names=[r.forename,r.alt].map(_nameKey).filter(Boolean);
+        cands=pupils.filter(p=>_pupilYgNum(p)===st.yg&&_nameKey(p.surname)===_nameKey(r.surname)
+          &&(names.includes(_nameKey(p.forename))||names.includes(_nameKey(p.pref))));
+        const ems=[...new Set(cands.map(p=>normEmail(p.email)).filter(Boolean))];
+        if(ems.length===1)email=ems[0];
+        else{out.unmatched.push({key,setCode:st.setCode,yg:st.yg,block:st.block,row:r,why:ems.length?"more than one pupil matches":"no pupil on the roster matches",
+          candidates:ems});return;}
+      }
+      const bk=st.yg+"|"+st.block+"|"+email;
+      if(inBlock[bk]&&inBlock[bk]!==st.setCode){out.clashes.push({email,yg:st.yg,block:st.block,sets:[inBlock[bk],st.setCode]});return;}
+      if(inBlock[bk])return;   // listed twice in the same set
+      inBlock[bk]=st.setCode;
+      out.members.push({yg:st.yg,block:st.block,email,setCode:st.setCode});
+    });
+  });
+  return out;
+}
+// What an import changes for each year group it covers: joiners (in a set now, not before, in
+// that block), leavers (the reverse) and moves (a different set in the same block).
+function blockImportDiff(newMembers,oldMembers){
+  const ygs=new Set(newMembers.map(m=>m.yg));
+  const was={},now={};
+  oldMembers.filter(m=>ygs.has(m.yg)).forEach(m=>{was[m.yg+"|"+m.block+"|"+m.email]=m.setCode;});
+  newMembers.forEach(m=>{now[m.yg+"|"+m.block+"|"+m.email]=m.setCode;});
+  const d={joiners:[],leavers:[],moves:[]};
+  Object.keys(now).forEach(k=>{const [yg,block,email]=k.split("|");
+    if(!(k in was))d.joiners.push({yg,block,email,to:now[k]});
+    else if(was[k]!==now[k])d.moves.push({yg,block,email,from:was[k],to:now[k]});});
+  Object.keys(was).forEach(k=>{if(!(k in now)){const [yg,block,email]=k.split("|");d.leavers.push({yg,block,email,from:was[k]});}});
+  return d;
+}
+// Starting choices for the review screen: what was saved last time for the same set (a
+// re-import), else the teacher's code if they are on the LEX roster, else TBC. Never creates
+// staff: a teacher not on the roster is shown, and the lead is left for Gideon to choose.
+function blockImportDefaults(parsed,current){
+  const prevSet={},prevSubj={},prevFree={};
+  (current.sets||[]).forEach(s=>{
+    if(s.set_code===BLOCK_FREE)prevFree[s.yg+"|"+s.block]=s;
+    else{prevSet[s.set_code]=s;if(s.subject)prevSubj[s.subject_code]=s.subject;}
+  });
+  const sets={},free={};
+  parsed.sets.forEach(st=>{
+    const p=prevSet[st.setCode];
+    sets[st.setCode]={
+      subject:(p&&p.subject)||prevSubj[st.subjectCode]||BLOCK_SUBJECT_NAMES[st.subjectCode]||"",
+      lead:p?p.lead:(staff.some(x=>x.c===st.teacher)?st.teacher:""),
+      venue:p?p.venue:""
+    };
+    // v172: Supported Study is set per block (its lead and room can differ block to block).
+    const fy=free[st.yg]=free[st.yg]||{};
+    if(!fy[st.block]){const f=prevFree[st.yg+"|"+st.block]||prevFree[st.yg+"|*"];fy[st.block]={subject:(f&&f.subject)||"Y"+st.yg+" Supported Study",lead:f?f.lead:"",venue:f?f.venue:""};}
+  });
+  return {sets,free};
+}
+// The rows one import writes: its sets, a "not in a set" row per block, and members.
+function blockImportRows(parsed,matched,choices,batch){
+  const sets=[],members=[];
+  parsed.sets.forEach(st=>{const c=choices.sets[st.setCode]||{};
+    sets.push({pfx:PFX,yg:st.yg,batch,block:st.block,set_code:st.setCode,subject_code:st.subjectCode,
+      subject:c.subject||st.subjectCode,lead:c.lead||"",venue:c.venue||"",teacher:st.teacher||""});});
+  Object.keys(choices.free).forEach(yg=>Object.keys(choices.free[yg]).forEach(bl=>{const f=choices.free[yg][bl];
+    sets.push({pfx:PFX,yg,batch,block:bl,set_code:BLOCK_FREE,subject_code:"",subject:f.subject||"Y"+yg+" Supported Study",lead:f.lead||"",venue:f.venue||"",teacher:""});}));
+  matched.members.forEach(m=>members.push({pfx:PFX,yg:m.yg,batch,block:m.block,email:m.email,set_code:m.setCode}));
+  return {sets,members};
+}
+// The current import for each year group: the newest batch in lex_block_sets, and only the
+// members written with it (older or unfinished batches are ignored).
+function blockCurrent(setRows,memberRows){
+  const cur={};
+  (setRows||[]).forEach(r=>{if(!cur[r.yg]||r.batch>cur[r.yg])cur[r.yg]=r.batch;});
+  return {batches:cur,
+    sets:(setRows||[]).filter(r=>cur[r.yg]===r.batch),
+    members:(memberRows||[]).filter(r=>cur[r.yg]===r.batch).map(r=>({yg:r.yg,block:r.block,email:normEmail(r.email),setCode:r.set_code}))};
+}
+
+// ── Cloud ──
+let blockData={loaded:false,error:null,batches:{},sets:[],members:[]};
+function _blkHeaders(extra){return Object.assign({"apikey":supaClient.key,"Authorization":"Bearer "+supaClient.key},extra||{});}
+async function _blkGetAll(table,select){
+  const rows=[];const PAGE=1000;
+  for(let off=0;;off+=PAGE){
+    const res=await fetch(`${supaClient.url}/rest/v1/${table}?select=${select}&pfx=eq.${PFX}`,{headers:_blkHeaders({"Accept":"application/json","Range-Unit":"items","Range":off+"-"+(off+PAGE-1)})});
+    if(!res.ok&&res.status!==206){const t=await res.text().catch(()=>"");
+      throw new Error(res.status===404||/42P01|does not exist|schema cache/i.test(t)?"missing":"HTTP "+res.status+" "+t.slice(0,120));}
+    const page=await res.json();rows.push(...page);if(page.length<PAGE)break;
+  }
+  return rows;
+}
+async function blocksLoad(){
+  if(!supaClient){blockData={loaded:false,error:"No cloud connection.",batches:{},sets:[],members:[]};return blockData;}
+  try{
+    const s=await _blkGetAll("lex_block_sets","yg,batch,block,set_code,subject_code,subject,lead,venue,teacher");
+    const m=await _blkGetAll("lex_block_members","yg,batch,block,email,set_code");
+    blockData=Object.assign({loaded:true,error:null},blockCurrent(s,m));
+    // v172: cached, so My LEX and the Staff Portal show sets straight away and offline.
+    try{localStorage.setItem("lex12-blocks",JSON.stringify({batches:blockData.batches,sets:blockData.sets,members:blockData.members}));}catch(_){}
+  }catch(e){
+    // A failed read keeps what this device already has: pupils keep seeing their sets.
+    blockData=Object.assign({},blockData,{loaded:false,error:e.message==="missing"?"missing":String(e.message||e)});
+    if(e.message==="missing")blockData=Object.assign(blockData,{batches:{},sets:[],members:[]});
+  }
+  return blockData;
+}
+async function _blkPost(table,rows){
+  for(let i=0;i<rows.length;i+=500){
+    const res=await fetch(`${supaClient.url}/rest/v1/${table}`,{method:"POST",headers:_blkHeaders({"Content-Type":"application/json","Prefer":"resolution=merge-duplicates,return=minimal"}),body:JSON.stringify(rows.slice(i,i+500))});
+    if(!res.ok)throw new Error(table+": HTTP "+res.status+" "+(await res.text().catch(()=>"")).slice(0,160));
+  }
+}
+// Write an import: members, then sets (the switch), then tidy away older batches.
+async function blocksCommit(rows){
+  const ygs=[...new Set(rows.sets.map(r=>r.yg))];const batch=rows.sets[0].batch;
+  await _blkPost("lex_block_members",rows.members);
+  await _blkPost("lex_block_sets",rows.sets);
+  const tidy=[];
+  for(const yg of ygs)for(const t of ["lex_block_members","lex_block_sets"]){
+    const res=await fetch(`${supaClient.url}/rest/v1/${t}?pfx=eq.${PFX}&yg=eq.${encodeURIComponent(yg)}&batch=neq.${encodeURIComponent(batch)}`,{method:"DELETE",headers:_blkHeaders({"Prefer":"return=minimal"})});
+    if(!res.ok)tidy.push(t);
+  }
+  return {tidyFailed:tidy};   // harmless: older batches are ignored when reading
+}
+// Change one set's subject name, lead or venue after import (one row; the current batch).
+async function blockSetUpdate(row,fields){
+  const q=["pfx=eq."+PFX,"yg=eq."+encodeURIComponent(row.yg),"batch=eq."+encodeURIComponent(row.batch),"block=eq."+encodeURIComponent(row.block),"set_code=eq."+encodeURIComponent(row.set_code)].join("&");
+  const res=await fetch(`${supaClient.url}/rest/v1/lex_block_sets?${q}`,{method:"PATCH",headers:_blkHeaders({"Content-Type":"application/json","Prefer":"return=representation"}),
+    body:JSON.stringify(Object.assign({},fields,{updated_at:new Date().toISOString()}))});
+  if(!res.ok)throw new Error("HTTP "+res.status);
+  const back=await res.json();if(!Array.isArray(back)||!back.length)throw new Error("that set has been replaced by a newer import — reload");
+  Object.assign(row,fields);
+}
+
+// ── v172: the block timetable in use ──
+// An activity runs as blocks when it carries a.blocks = {yg, A, B}: the year group whose set
+// lists it uses, and the block each session is (A and B the same for a whole-day block).
+// The pupil's allocation stays the activity, so per-date entries (out of school and so on)
+// still win, and attendance keys, billing and history keep the activity's name. What each
+// pupil and member of staff sees — their set, its lead and room — and the register they
+// mark come from the set lists. With no set lists loaded for that year group, everything
+// falls back to the activity as it was.
+function actBlockFor(act,sess){
+  const b=act&&act.blocks;
+  return b&&b.yg&&blockData.batches&&blockData.batches[b.yg]&&b[sess]?b[sess]:null;
+}
+let _blkIdx=null,_blkIdxOf=null;
+function _blockMemberIndex(){
+  if(_blkIdxOf!==blockData){_blkIdxOf=blockData;_blkIdx=new Map();(blockData.members||[]).forEach(m=>_blkIdx.set(m.yg+"|"+m.block+"|"+m.email,m.setCode));}
+  return _blkIdx;
+}
+// Supported Study for a block: its own row, else a year-group-wide one.
+function _blockFreeRow(yg,block){
+  const ss=blockData.sets||[];
+  return ss.find(s=>s.yg===yg&&s.set_code===BLOCK_FREE&&s.block===block)||ss.find(s=>s.yg===yg&&s.set_code===BLOCK_FREE&&s.block==="*")||null;
+}
+// Where one pupil is for one session: their set in that block, or Supported Study. null when
+// the activity (theirs on that date, unless given) isn't running as blocks.
+function blockDetailFor(email,di,sess,act){
+  const ne=normEmail(email);
+  const a=act||findActByName_exact(getEffectiveAllocOnDate(ne,di,buildEngMap()));
+  const b=actBlockFor(a,sess);if(!b)return null;
+  const yg=a.blocks.yg,code=_blockMemberIndex().get(yg+"|"+b+"|"+ne);
+  const row=code?(blockData.sets||[]).find(s=>s.yg===yg&&s.set_code===code):_blockFreeRow(yg,b);
+  return {block:b,setCode:code||BLOCK_FREE,free:!code,subject:row?row.subject:"Y"+yg+" Supported Study",
+    lead:row?row.lead:"",venue:row?row.venue:""};
+}
+// Every set running in one session of a block activity, then its Supported Study.
+function blockSessionSets(act,sess){
+  const b=actBlockFor(act,sess);if(!b)return [];
+  const yg=act.blocks.yg;
+  const sets=(blockData.sets||[]).filter(s=>s.yg===yg&&s.block===b&&s.set_code!==BLOCK_FREE).sort((x,y)=>(x.subject||"").localeCompare(y.subject||""));
+  const f=_blockFreeRow(yg,b);
+  return f?sets.concat([Object.assign({},f,{block:b})]):sets;
+}
+// Is this pupil in the set — or, for Supported Study, in no set of that block?
+function blockSetHas(yg,block,setCode,email){
+  const got=_blockMemberIndex().get(yg+"|"+block+"|"+normEmail(email));
+  return setCode===BLOCK_FREE?!got:got===setCode;
+}
+// An activity's sessions: a split's P1 and P4 components, or the whole day.
+function _blockSessionsOf(act){return isSplitAct(act)?[{sess:"A",comp:act.sessA},{sess:"B",comp:act.sessB}]:[{sess:"",comp:act.n}];}
+// A pupil's sets on a date, as short text for a table cell or a letter: "P1 Psychology · P4 History".
+function blockPupilSetsText(act,email,di){
+  if(!act||!act.blocks)return "";
+  return _blockSessionsOf(act).map(({sess})=>{const d=blockDetailFor(email,di,sess||"A",act);
+    return d?(sess?"P"+(sess==="A"?"1":"4")+" ":"")+d.subject:"";}).filter(Boolean).join(" · ");
+}
+// What a member of staff leads in a block session, for their schedule.
+function blockStaffLines(code,name,di,sess){
+  const a=acts.find(x=>x.blocks&&(x.di||[]).includes(di)&&(sess?(sess==="A"?x.sessA:x.sessB)===name:x.n===name));
+  if(!a)return [];
+  return blockSessionSets(a,sess||"A").filter(s=>s.lead===code).map(s=>"Block "+s.block+" · "+s.subject+(s.venue?" · "+s.venue:""));
+}
+// The Friday notice's lines for a block activity: each session's sets with room and lead.
+function blockNoticeLines(act){
+  if(!act||!act.blocks)return [];
+  const out=[];
+  _blockSessionsOf(act).forEach(({sess})=>{
+    const S=sess||"A",sets=blockSessionSets(act,S);if(!sets.length)return;
+    out.push("    "+(sess?"P"+(sess==="A"?"1":"4")+" ":"")+"Block "+actBlockFor(act,S)+":");
+    sets.forEach(s=>{const ld=staff.find(x=>x.c===s.lead);
+      out.push("      "+s.subject+" — "+(s.venue||"venue TBC")+" ("+(ld?ld.n:(s.lead||"staff TBC"))+")");});
+  });
+  return out;
+}
+
+// ── Switching an activity to its block timetable (and back) ──
+// What switching would do, for dates still to come. Set leads (and Supported Study's) go on
+// the staff calendar for their session, on the session's name, so registers, the Saturday
+// checks and the portal all see them. Staff on that session who don't lead a set are listed
+// in `remove`; they come off only if Gideon ticks it (some are there on purpose, as support —
+// the 29 Sept data had one on both 3 Oct sessions).
+// Someone already down for something else in that session is a clash: left as they are
+// and listed, never overwritten.
+function blockSwitchPlan(act,mapping,todayYmd){
+  const t=todayYmd||_todayYmd();
+  const probe=Object.assign({},act,{blocks:mapping});
+  const plan={act:act.n,mapping:Object.assign({},mapping),dates:[],add:[],remove:[],clashes:[],noLead:[],twoSets:[]};
+  (act.di||[]).filter(di=>dates[di]&&!_diHasHappened(di,t)).sort((x,y)=>x-y).forEach(di=>{
+    plan.dates.push(di);
+    _blockSessionsOf(act).forEach(({sess,comp})=>{
+      const S=sess||"A",leads={};
+      blockSessionSets(probe,S).forEach(s=>{
+        if(!s.lead||!staff.some(x=>x.c===s.lead)){plan.noLead.push({di,sess,set:s.set_code,subject:s.subject});return;}
+        (leads[s.lead]=leads[s.lead]||[]).push(s.subject);
+      });
+      Object.entries(leads).forEach(([code,subs])=>{if(subs.length>1)plan.twoSets.push({di,sess,code,subjects:subs});});
+      saKeysForDate(di).forEach(k=>{
+        const ks=k.split("|")[2]||"";
+        if(sess&&ks&&ks!==sess)return;
+        if(saGet(k)===comp&&!leads[saCode(k)])plan.remove.push({key:k,was:sa[k],di,sess,code:saCode(k)});
+      });
+      Object.keys(leads).forEach(code=>{
+        const key=di+"|"+code+(sess?"|"+sess:"");
+        const mine=sess?[key,di+"|"+code]:[key,di+"|"+code+"|A",di+"|"+code+"|B"];
+        const other=mine.filter(k=>sa[k]&&saGet(k)!==comp);
+        if(other.length){plan.clashes.push({di,sess,code,subjects:leads[code],onto:other.map(k=>saGet(k)).join(", ")});return;}
+        if(saGet(key)!==comp)plan.add.push({key,code,act:comp,di,sess,subjects:leads[code]});
+      });
+    });
+  });
+  return plan;
+}
+// Apply a plan: staff calendar changes, then the mapping. What was taken off is kept on the
+// activity so Switch back can put it back.
+function applyBlockSwitch(act,plan){
+  const undo={at:new Date().toISOString(),removed:{},added:[]};
+  plan.remove.forEach(r=>{undo.removed[r.key]=sa[r.key];delete sa[r.key];});
+  plan.add.forEach(a=>{saSet(a.key,a.act,"lead");undo.added.push({key:a.key,act:a.act});});
+  act.blocks=Object.assign({},plan.mapping);
+  act.blocksUndo=undo;
+  invalidateCaches();
+}
+// Undo a switch: the leads it added come off (unless changed since), those it took off go
+// back (unless their slot has been filled since), and the activity is a split again.
+function undoBlockSwitch(act){
+  const u=act.blocksUndo||{removed:{},added:[]};let off=0,back=0;
+  (u.added||[]).forEach(x=>{if(saGet(x.key)===x.act){delete sa[x.key];off++;}});
+  Object.entries(u.removed||{}).forEach(([k,v])=>{if(!sa[k]){sa[k]=v;back++;}});
+  delete act.blocks;delete act.blocksUndo;
+  invalidateCaches();
+  return {off,back};
+}
+
+// ── Confirmed leads and venues (spreadsheet) ──
+// One row per set — Block, Code, Subject, iSAMS set, iSAMS teacher, Pupils, LEX lead
+// ("CODE – Name"), If not on roster: name, Venue — and a Supported Study row per block (its
+// iSAMS set reads "(pupils with no set in this block)"). Laid over the review screen's choices;
+// anything it can't use is listed rather than guessed.
+function parseLeadsVenuesSheets(sheets,parsed){
+  const out={sets:{},free:{},problems:[],applied:0};
+  const codes=new Set(parsed.sets.map(s=>s.setCode)),ygs=[...new Set(parsed.sets.map(s=>s.yg))];
+  const venueNames=new Set((venues||[]).map(v=>v&&v.name).filter(Boolean));
+  (sheets||[]).forEach(sh=>{
+    const rows=(sh.rows||[]).map(r=>(r||[]).map(c=>String(c==null?"":c).trim()));
+    const hi=rows.findIndex(r=>r.some(c=>/^block$/i.test(c))&&r.some(c=>/^lex lead$/i.test(c)));
+    if(hi<0)return;
+    const H=rows[hi],col=re=>H.findIndex(c=>re.test(c));
+    const iB=col(/^block$/i),iSub=col(/^subject/i),iSet=col(/^isams set$/i),iLead=col(/^lex lead$/i),iName=col(/^if not on roster/i),iVen=col(/^venue$/i);
+    if(iSet<0||iLead<0){out.problems.push("‘"+sh.name+"’ has no iSAMS set / LEX lead columns");return;}
+    rows.slice(hi+1).forEach(r=>{
+      const block=(r[iB]||"").toUpperCase(),set=(r[iSet]||"").toUpperCase(),subject=iSub<0?"":(r[iSub]||"");
+      if(!block&&!set)return;
+      const free=/^\(/.test(set)||(/supported study/i.test(subject)&&!codes.has(set));
+      if(!free&&!codes.has(set)){if(set)out.problems.push(set+" is in the leads file but not in the set lists");return;}
+      const where=free?"Supported Study, block "+block:set;
+      const leadTxt=r[iLead]||"",code=(leadTxt.split(/\s+[–—-]\s+/)[0]||"").trim();
+      const lead=staff.some(s=>s.c===code)?code:"";
+      if(leadTxt&&!lead)out.problems.push(where+": lead “"+leadTxt+(iName>=0&&r[iName]?" / "+r[iName]:"")+"” isn't on the LEX roster — left TBC");
+      const venue=iVen<0?"":(r[iVen]||"");
+      if(venue&&!venueNames.has(venue))out.problems.push(where+": “"+venue+"” isn't a LEX venue — left TBC");
+      const ch={subject,lead,venue:venueNames.has(venue)?venue:""};
+      if(free){if(!block)return;ygs.forEach(yg=>{(out.free[yg]=out.free[yg]||{})[block]=ch;});}
+      else out.sets[set]=ch;
+      out.applied++;
+    });
+  });
+  const missing=[...codes].filter(c=>!out.sets[c]);
+  if(out.applied&&missing.length)out.problems.push("No row for "+missing.join(", ")+" — those keep what's on screen");
+  if(!out.applied)out.problems.push("No leads-and-venues rows found (a header row with Block and LEX lead)");
+  return out;
+}
+// Lay the file's choices over the review's: lead and venue always (TBC included — the file
+// is the confirmed answer), the subject name only where the file gives one.
+function applyLeadsVenues(choices,L){
+  Object.entries(L.sets).forEach(([code,c])=>{const cur=choices.sets[code];if(!cur)return;
+    if(c.subject)cur.subject=c.subject;cur.lead=c.lead;cur.venue=c.venue;});
+  Object.entries(L.free).forEach(([yg,byBlock])=>Object.entries(byBlock).forEach(([bl,c])=>{
+    const cur=choices.free[yg]&&choices.free[yg][bl];if(!cur)return;
+    if(c.subject)cur.subject=c.subject;cur.lead=c.lead;cur.venue=c.venue;}));
+}
+
+// ── Settings → Blocks: the switch ──
+function _blockGuessMapping(a,yg){
+  const m=/\b([A-Z])\s+then\s+([A-Z])\b/i.exec(a.n||"");
+  if(m&&isSplitAct(a))return {yg,A:m[1].toUpperCase(),B:m[2].toUpperCase()};
+  const w=/\bTHINK\s+([A-Z])\s*$/i.exec(a.n||"");
+  if(w&&!isSplitAct(a))return {yg,A:w[1].toUpperCase(),B:w[1].toUpperCase()};
+  return {yg,A:"",B:""};
+}
+function _renderBlockTimetable(box){
+  const ygs=Object.keys(blockData.batches||{}).sort((a,b)=>b-a);if(!ygs.length)return;
+  const today=_todayYmd(),dl=di=>(dates[di]&&dates[di].label)||("date "+(di+1));
+  const card=h("div",{className:"card card-pad mb-12"});box.appendChild(card);
+  card.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"4px"}},"Block timetable — which activities use the set lists"));
+  card.appendChild(h("div",{style:{fontSize:"12px",color:"var(--text2)",marginBottom:"8px",lineHeight:1.5}},
+    "Switching keeps every pupil's allocation, per-date entries and register marks as they are. It changes what pupils and staff see (their own set, lead and room), gives each set its own register, and puts set leads on the staff calendar for dates to come. Staff already on the session who don't lead a set stay on as support unless you choose otherwise. Preview first; Switch back undoes it."));
+  window._blkMap=window._blkMap||{};
+  ygs.forEach(yg=>{
+    const blocks=[...new Set((blockData.sets||[]).filter(s=>s.yg===yg&&s.set_code!==BLOCK_FREE).map(s=>s.block))].sort();
+    const cands=acts.filter(a=>a.type!=="designation"&&(a.di||[]).some(di=>dates[di]&&!_diHasHappened(di,today))
+      &&(a.blocks&&a.blocks.yg===yg||String(a.yg||"").trim()===yg)).sort((x,y)=>Math.min(...x.di)-Math.min(...y.di));
+    card.appendChild(h("div",{style:{fontWeight:600,fontSize:"12px",margin:"8px 0 2px"}},"Year "+yg+" activities with dates to come"));
+    if(!cands.length)card.appendChild(h("div",{style:{fontSize:"12px",color:"var(--text3)"}},"None."));
+    cands.forEach(a=>{
+      const row=h("div",{style:{borderTop:"1px solid var(--border)",padding:"8px 0"}});card.appendChild(row);
+      row.appendChild(h("div",{style:{fontWeight:600,fontSize:"12px"}},a.n,h("span",{style:{fontWeight:400,color:"var(--text3)",marginLeft:"8px"}},(a.di||[]).slice().sort((x,y)=>x-y).map(dl).join(", "))));
+      const sessLabel=sess=>sess?"P"+(sess==="A"?"1":"4"):"All day";
+      if(a.blocks){
+        row.appendChild(h("div",{style:{fontSize:"12px",color:"var(--green)",margin:"4px 0"}},"✓ Block timetable: "+
+          _blockSessionsOf(a).map(({sess})=>sessLabel(sess)+" Block "+a.blocks[sess||"A"]).join(" · ")));
+        row.appendChild(h("button",{className:"btn btn-ghost btn-xs",onClick:()=>{
+          if(!confirm("Switch "+a.n+" back? The staff calendar changes made by the switch are undone (unless changed since), and pupils see the activity as before."))return;
+          const r=undoBlockSwitch(a);
+          logAction("BLOCKS_SWITCH",a.n+": back to the "+(isSplitAct(a)?"split":"single activity")+" ("+r.off+" set lead(s) off, "+r.back+" staff put back)");
+          saveAll();toast(a.n+" switched back");rebuildAdminPreserveScroll();
+        }},"Switch back"));
+        return;
+      }
+      const g=window._blkMap[a.id]||(window._blkMap[a.id]=_blockGuessMapping(a,yg));
+      const ctl=h("div",{style:{display:"flex",gap:"8px",alignItems:"center",flexWrap:"wrap",margin:"4px 0"}});row.appendChild(ctl);
+      const sessions=_blockSessionsOf(a);
+      sessions.forEach(({sess})=>{
+        const S=sess||"A";
+        const sel=h("select",{onChange:e=>{g[S]=e.target.value;if(!sess)g.B=e.target.value;if(window._blkPreview&&window._blkPreview.id===a.id)window._blkPreview=null;rebuildAdminPreserveScroll();}});
+        sel.appendChild(h("option",{value:"",selected:!g[S]},"— not a block —"));
+        blocks.forEach(bl=>sel.appendChild(h("option",{value:bl,selected:g[S]===bl},"Block "+bl)));
+        ctl.appendChild(h("span",{style:{fontSize:"12px"}},sessLabel(sess)+" ",sel));
+      });
+      const ready=sessions.every(({sess})=>g[sess||"A"]);
+      ctl.appendChild(h("button",{className:"btn btn-ghost btn-xs",disabled:!ready,onClick:()=>{
+        window._blkPreview={id:a.id,plan:blockSwitchPlan(a,g)};rebuildAdminPreserveScroll();}},"Preview switch"));
+      if(window._blkPreview&&window._blkPreview.id===a.id)_renderBlockSwitchPreview(row,a,window._blkPreview.plan);
+    });
+  });
+}
+function _renderBlockSwitchPreview(el,a,plan){
+  const probe=Object.assign({},a,{blocks:plan.mapping});
+  const dl=di=>(dates[di]&&dates[di].label)||("date "+(di+1));
+  const nm=c=>{const s=staff.find(x=>x.c===c);return s?s.n+" ("+c+")":c;};
+  const box=h("div",{style:{background:"var(--surface2)",borderRadius:"6px",padding:"10px 12px",margin:"6px 0",fontSize:"12px",lineHeight:1.6}});el.appendChild(box);
+  box.appendChild(h("div",{style:{fontWeight:700,marginBottom:"4px"}},"Preview — nothing has changed yet"));
+  const engMap=buildEngMap(),all=[...getAllAllocEmails()];   // a Set
+  plan.dates.forEach(di=>{
+    const on=all.filter(ne=>getEffectiveAllocOnDate(ne,di,engMap)===a.n);
+    const outYg=on.filter(ne=>{const p=findPupilByEmail(ne);return !p||_pupilYgNum(p)!==plan.mapping.yg;});
+    box.appendChild(h("div",{style:{fontWeight:600,marginTop:"6px"}},dl(di)+" — "+on.length+" pupils on "+a.n+(outYg.length?" ("+outYg.length+" not in Year "+plan.mapping.yg+": they'd see Supported Study)":"")));
+    _blockSessionsOf(a).forEach(({sess})=>{
+      const S=sess||"A";const sets=blockSessionSets(probe,S);
+      const cnt={};on.forEach(ne=>{const d=blockDetailFor(ne,di,S,probe);if(d)cnt[d.setCode]=(cnt[d.setCode]||0)+1;});
+      box.appendChild(h("div",{style:{marginLeft:"10px",fontWeight:600}},(sess?"P"+(sess==="A"?"1":"4")+" ":"")+"Block "+plan.mapping[S]));
+      sets.forEach(s=>box.appendChild(h("div",{style:{marginLeft:"20px",color:s.lead?"":"var(--amber)"}},
+        s.subject+" · "+(s.venue||"venue TBC")+" · "+(s.lead?nm(s.lead):"no lead")+" · "+(cnt[s.set_code]||0)+" pupils")));
+    });
+  });
+  const list=(title,items,colour)=>{if(!items.length)return;box.appendChild(h("div",{style:{fontWeight:600,marginTop:"8px",color:colour||""}},title+" ("+items.length+")"));
+    items.forEach(t=>box.appendChild(h("div",{style:{marginLeft:"10px",color:colour||""}},t)));};
+  const sl=(di,sess)=>dl(di)+(sess?" P"+(sess==="A"?"1":"4"):"");
+  list("Staff calendar: set leads put on",plan.add.map(x=>sl(x.di,x.sess)+": "+nm(x.code)+" — "+x.subjects.join(" + ")));
+  list("Also on the session but not leading a set — they stay on as support",plan.remove.map(x=>sl(x.di,x.sess)+": "+nm(x.code)));
+  const off=h("input",{type:"checkbox"});
+  if(plan.remove.length)box.appendChild(h("label",{style:{display:"block",marginLeft:"10px"}},off," Take them off the staff calendar instead"));
+  list("Clashes — already down for something else, left as they are",plan.clashes.map(x=>sl(x.di,x.sess)+": "+nm(x.code)+" leads "+x.subjects.join(" + ")+" but is on "+x.onto),"var(--red)");
+  list("Sets with no lead on the roster",plan.noLead.map(x=>sl(x.di,x.sess)+": "+x.subject+" ("+x.set+")"),"var(--amber)");
+  list("Leading two sets in one session",plan.twoSets.map(x=>sl(x.di,x.sess)+": "+nm(x.code)+" — "+x.subjects.join(" + ")),"var(--amber)");
+  box.appendChild(h("div",{style:{display:"flex",gap:"8px",marginTop:"10px",flexWrap:"wrap"}},
+    h("button",{className:"btn btn-primary btn-sm",onClick:()=>{
+      if(!confirm("Switch "+a.n+" to the block timetable for "+plan.dates.map(dl).join(" and ")+"?"))return;
+      const p2=off.checked?plan:Object.assign({},plan,{remove:[]});
+      applyBlockSwitch(a,p2);window._blkPreview=null;
+      logAction("BLOCKS_SWITCH",a.n+": block timetable ("+_blockSessionsOf(a).map(({sess})=>(sess?"P"+(sess==="A"?"1":"4")+" ":"")+"Block "+plan.mapping[sess||"A"]).join(", ")+"); "+
+        p2.add.length+" set lead(s) on, "+p2.remove.length+" staff off, "+plan.clashes.length+" clash(es) left");
+      saveAll();toast(a.n+" now runs on the block timetable");rebuildAdminPreserveScroll();
+    }},"Switch to the block timetable"),
+    h("button",{className:"btn btn-ghost btn-sm",onClick:()=>{window._blkPreview=null;rebuildAdminPreserveScroll();}},"Cancel")));
+}
+// ── Settings → Blocks ──
+function _venueSelect(value,onPick,width){
+  const cur=value||"";const names=[...new Set((venues||[]).map(v=>v&&v.name).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  const sel=h("select",{style:{width:width||"150px",color:cur&&!names.includes(cur)?"var(--red)":""},onChange:e=>onPick(e.target.value)});
+  sel.appendChild(h("option",{value:"",selected:!cur},"TBC"));
+  if(cur&&!names.includes(cur))sel.appendChild(h("option",{value:cur,selected:true},cur+" — not a venue"));
+  names.forEach(n=>sel.appendChild(h("option",{value:n,selected:n===cur},n)));
+  return sel;
+}
+function renderAdminBlocks(el){
+  el.appendChild(h("div",{style:{fontWeight:700,fontSize:"15px",marginBottom:"4px"}},"🧱 Blocks — LEX THINK set lists"));
+  el.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text2)",lineHeight:"1.6",marginBottom:"12px"}},
+    "Import the iSAMS set-list export (.xlsx, one sheet per set). Each pupil is matched to the roster by name; you confirm every set's LEX lead and venue before anything is saved. Only names are read from the file — never dates of birth. Nothing changes for pupils or staff until an activity is switched to the block timetable (below the set lists)."));
+  const box=h("div",null);el.appendChild(box);
+  if(window._blkReview){_renderBlockReview(box,window._blkReview);return;}
+  box.appendChild(h("div",{style:{fontSize:"12px",color:"var(--text3)"}},"Loading…"));
+  blocksLoad().then(()=>{if(!document.body.contains(box))return;box.innerHTML="";_renderBlockState(box);});
+}
+function _blockPupilName(email){const p=findPupilByEmail(email);return p?((p.pref||p.forename||"")+" "+(p.surname||"")).trim():email;}
+function _renderBlockState(box){
+  if(blockData.error==="missing"){
+    const c=h("div",{className:"card card-pad mb-12"});box.appendChild(c);
+    c.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"6px"}},"One-off setup: the block tables don't exist yet"));
+    c.appendChild(h("div",{style:{fontSize:"12px",color:"var(--text2)",marginBottom:"8px",lineHeight:1.5}},"Copy this, paste it into Supabase → SQL Editor for this project, press Run, then come back and press Check again."));
+    c.appendChild(h("textarea",{readonly:"",style:{width:"100%",height:"160px",fontFamily:"var(--mono)",fontSize:"10px"}},BLOCK_SETUP_SQL));
+    c.appendChild(h("div",{className:"flex",style:{gap:"8px",marginTop:"8px"}},
+      h("button",{className:"btn btn-ghost btn-sm",onClick:()=>{try{navigator.clipboard.writeText(BLOCK_SETUP_SQL);toast("SQL copied");}catch(_){}}},"Copy SQL"),
+      h("button",{className:"btn btn-primary btn-sm",onClick:()=>rebuildAdminPreserveScroll()},"Check again")));
+    return;
+  }
+  if(blockData.error){box.appendChild(h("div",{className:"alert alert-info"},"Couldn't load the set lists: "+blockData.error));return;}
+  // Import
+  const imp=h("div",{className:"card card-pad mb-12"});box.appendChild(imp);
+  const file=h("input",{type:"file",accept:".xlsx",style:{fontSize:"12px"}});
+  const msg=h("span",{style:{fontSize:"12px",color:"var(--text3)",marginLeft:"8px"}});
+  file.addEventListener("change",async()=>{
+    const f=file.files&&file.files[0];if(!f)return;
+    msg.textContent="Reading "+f.name+"…";
+    try{
+      const parsed=parseSetListSheets(await readXlsxSheets(await f.arrayBuffer()));
+      if(!parsed.sets.length){msg.textContent="No set lists found in "+f.name+(parsed.problems.length?" ("+parsed.problems[0].why+")":"")+".";return;}
+      window._blkReview={file:f.name,parsed,manual:{},choices:blockImportDefaults(parsed,blockData)};
+      rebuildAdminPreserveScroll();
+    }catch(e){msg.textContent=String(e.message||e);}
+  });
+  imp.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"6px"}},"Import set lists"));
+  imp.appendChild(h("div",{style:{display:"flex",alignItems:"center",flexWrap:"wrap"}},file,msg));
+  // Current
+  const ygs=Object.keys(blockData.batches).sort((a,b)=>b-a);
+  if(!ygs.length){box.appendChild(h("div",{style:{fontSize:"12px",color:"var(--text3)"}},"No set lists imported yet."));return;}
+  ygs.forEach(yg=>{
+    const card=h("div",{className:"card card-pad mb-12"});box.appendChild(card);
+    const sets=blockData.sets.filter(s=>s.yg===yg&&s.set_code!==BLOCK_FREE).sort((a,b)=>a.block.localeCompare(b.block)||a.set_code.localeCompare(b.set_code));
+    const mem=blockData.members.filter(m=>m.yg===yg);
+    const b=blockData.batches[yg];
+    card.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"6px"}},"Year "+yg+" — "+sets.length+" sets, "+new Set(mem.map(m=>m.email)).size+" pupils",
+      h("span",{style:{fontWeight:400,fontSize:"11px",color:"var(--text3)",marginLeft:"8px"}},"imported "+new Date(b).toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}))));
+    const save=(row,fields,ctl)=>blockSetUpdate(row,fields).then(()=>toast("Saved")).catch(e=>{toast("Not saved — "+e.message,"err");if(ctl)ctl.style.outline="2px solid var(--red)";});
+    const tbl=h("table",{style:{fontSize:"12px"}});card.appendChild(tbl);
+    tbl.appendChild(h("thead",null,h("tr",null,...["Block","Set","Subject","iSAMS teacher","LEX lead","Venue","Pupils"].map(x=>h("th",null,x)))));
+    const tb=h("tbody",null);tbl.appendChild(tb);
+    sets.forEach(s=>{
+      const who=mem.filter(m=>m.setCode===s.set_code);
+      const subj=h("input",{value:s.subject,style:{width:"150px"},onChange:e=>save(s,{subject:e.target.value.trim()},e.target)});
+      tb.appendChild(h("tr",null,h("td",null,s.block),h("td",null,s.set_code),h("td",null,subj),
+        h("td",null,s.teacher+(s.teacher&&!staff.some(x=>x.c===s.teacher)?" (not on roster)":"")),
+        h("td",null,_staffCodeSelect(s.lead,v=>save(s,{lead:v}),"130px")),h("td",null,_venueSelect(s.venue,v=>save(s,{venue:v}))),
+        h("td",{title:who.map(m=>_blockPupilName(m.email)).sort().join(", ")},String(who.length))));
+    });
+    // Supported Study, per block: pupils on the roster with no set in it.
+    const inSome={};mem.forEach(m=>{(inSome[m.block]=inSome[m.block]||new Set()).add(m.email);});
+    const ygPupils=pupils.filter(p=>_pupilYgNum(p)===yg).map(p=>normEmail(p.email));
+    [...new Set(sets.map(s=>s.block))].sort().forEach(bl=>{
+      const fr=_blockFreeRow(yg,bl);if(!fr)return;
+      tb.appendChild(h("tr",{style:{background:"var(--surface2)"}},h("td",null,bl),h("td",null,"Not in a set"),
+        h("td",null,h("input",{value:fr.subject,style:{width:"150px"},onChange:e=>save(fr,{subject:e.target.value.trim()},e.target)})),h("td",null,""),
+        h("td",null,_staffCodeSelect(fr.lead,v=>save(fr,{lead:v}),"130px")),h("td",null,_venueSelect(fr.venue,v=>save(fr,{venue:v}))),
+        h("td",{title:"Year "+yg+" pupils on the roster with no set in block "+bl},String(ygPupils.filter(e=>!(inSome[bl]&&inSome[bl].has(e))).length))));
+    });
+  });
+  _renderBlockTimetable(box); // v172
+}
+function _renderBlockReview(box,R){
+  const matched=matchSetPupils(R.parsed,R.manual);
+  const diff=blockImportDiff(matched.members,blockData.members||[]);
+  const ygs=[...new Set(R.parsed.sets.map(s=>s.yg))].sort();
+  const blocks=[...new Set(R.parsed.sets.map(s=>s.block))].sort();
+  const card=h("div",{className:"card card-pad mb-12"});box.appendChild(card);
+  card.appendChild(h("div",{style:{fontWeight:700,fontSize:"14px",marginBottom:"4px"}},"Review: "+R.file));
+  card.appendChild(h("div",{style:{fontSize:"12px",color:"var(--text2)",marginBottom:"10px"}},
+    R.parsed.sets.length+" sets ("+blocks.map(bl=>bl+" "+R.parsed.sets.filter(s=>s.block===bl).length).join(" · ")+") for Year "+ygs.join(", ")+" · "+
+    new Set(matched.members.map(m=>m.email)).size+" pupils matched · "+matched.unmatched.length+" to sort out · nothing is saved until you press Import."));
+  const redraw=()=>rebuildAdminPreserveScroll();
+  if(R.parsed.problems.length)card.appendChild(h("div",{className:"alert alert-info",style:{marginBottom:"8px"}},"Sheets skipped: "+R.parsed.problems.map(p=>"‘"+p.sheet+"’ ("+p.why+")").join("; ")));
+  if(matched.clashes.length){
+    card.appendChild(h("div",{style:{color:"var(--red)",fontWeight:600,fontSize:"12px",margin:"6px 0"}},"A pupil can't be in two sets in one block — fix these in iSAMS and export again:"));
+    matched.clashes.forEach(c=>card.appendChild(h("div",{style:{fontSize:"12px"}},"• "+_blockPupilName(c.email)+" — Block "+c.block+": "+c.sets.join(" and "))));
+  }
+  if(matched.unmatched.length){
+    card.appendChild(h("div",{style:{fontWeight:600,fontSize:"12px",margin:"8px 0 4px"}},"Names that didn't match one pupil — choose who they are, or leave them out"));
+    matched.unmatched.forEach(u=>{
+      const pool=(u.candidates.length?pupils.filter(p=>u.candidates.includes(normEmail(p.email))):pupils.filter(p=>_pupilYgNum(p)===u.yg))
+        .slice().sort((a,b)=>(a.surname||"").localeCompare(b.surname||""));
+      const sel=h("select",{onChange:e=>{if(e.target.value==="?")delete R.manual[u.key];else R.manual[u.key]=e.target.value;redraw();}});
+      sel.appendChild(h("option",{value:"?",selected:true},"— choose —"));
+      sel.appendChild(h("option",{value:""},"leave out"));
+      pool.forEach(p=>sel.appendChild(h("option",{value:normEmail(p.email)},(p.surname||"")+", "+(p.pref||p.forename||"")+" ("+(p.yg||"")+")")));
+      card.appendChild(h("div",{style:{fontSize:"12px",margin:"2px 0"}},u.setCode+": "+u.row.surname+", "+u.row.forename+(u.row.alt?" ("+u.row.alt+")":"")+" — "+u.why+" ",sel));
+    });
+  }
+  const left=Object.values(R.manual).filter(v=>v==="").length;
+  if(left)card.appendChild(h("div",{style:{fontSize:"11px",color:"var(--text3)"}},left+" row(s) left out by you."));
+  // v172: the confirmed leads and venues, from their own spreadsheet.
+  const lvf=h("input",{type:"file",accept:".xlsx",style:{fontSize:"12px"}});
+  lvf.addEventListener("change",async()=>{
+    const f=lvf.files&&lvf.files[0];if(!f)return;
+    try{const L=parseLeadsVenuesSheets(await readXlsxSheets(await f.arrayBuffer()),R.parsed);
+      applyLeadsVenues(R.choices,L);R.leadsFile={name:f.name,applied:L.applied,problems:L.problems};}
+    catch(e){R.leadsFile={name:f.name,applied:0,problems:[String(e.message||e)]};}
+    redraw();
+  });
+  card.appendChild(h("div",{style:{display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap",margin:"10px 0 4px",fontSize:"12px"}},
+    h("b",null,"Confirmed leads and venues (.xlsx):"),lvf,
+    R.leadsFile?h("span",{style:{color:R.leadsFile.applied?"var(--green)":"var(--red)"}},R.leadsFile.name+": "+R.leadsFile.applied+" row(s) applied"):null));
+  if(R.leadsFile&&R.leadsFile.problems.length)R.leadsFile.problems.forEach(p=>card.appendChild(h("div",{style:{fontSize:"11px",color:"var(--amber)"}},"• "+p)));
+  // Sets and their LEX lead / venue
+  const tbl=h("table",{style:{fontSize:"12px",marginTop:"10px"}});card.appendChild(tbl);
+  tbl.appendChild(h("thead",null,h("tr",null,...["Block","Set","Subject","iSAMS teacher","LEX lead","Venue","Pupils"].map(x=>h("th",null,x)))));
+  const tb=h("tbody",null);tbl.appendChild(tb);
+  R.parsed.sets.slice().sort((a,b)=>a.block.localeCompare(b.block)||a.setCode.localeCompare(b.setCode)).forEach(st=>{
+    const c=R.choices.sets[st.setCode];const onRoster=staff.some(x=>x.c===st.teacher);
+    tb.appendChild(h("tr",null,h("td",null,st.block),h("td",null,st.setCode),
+      h("td",null,h("input",{value:c.subject,placeholder:"name for "+st.subjectCode,style:{width:"150px",borderColor:c.subject?"":"var(--red)"},onInput:e=>{c.subject=e.target.value.trim();}})),
+      h("td",{style:{color:onRoster?"":"var(--amber)"}},st.teacher+(onRoster?"":" — not on LEX roster")),
+      h("td",null,_staffCodeSelect(c.lead,v=>{c.lead=v;},"130px")),h("td",null,_venueSelect(c.venue,v=>{c.venue=v;})),
+      h("td",null,String(matched.members.filter(m=>m.setCode===st.setCode).length)+" / "+st.pupils.length)));
+  });
+  ygs.forEach(yg=>Object.keys(R.choices.free[yg]||{}).sort().forEach(bl=>{const f=R.choices.free[yg][bl];
+    tb.appendChild(h("tr",{style:{background:"var(--surface2)"}},h("td",null,bl),h("td",null,"Not in a set (Y"+yg+")"),
+      h("td",null,h("input",{value:f.subject,style:{width:"150px"},onInput:e=>{f.subject=e.target.value.trim();}})),h("td",null,""),
+      h("td",null,_staffCodeSelect(f.lead,v=>{f.lead=v;},"130px")),h("td",null,_venueSelect(f.venue,v=>{f.venue=v;})),h("td",null,"")));}));
+  // What changes
+  const hadBefore=ygs.some(yg=>blockData.batches[yg]);
+  if(hadBefore){
+    const lines=[["Join a set",diff.joiners.map(d=>_blockPupilName(d.email)+" → "+d.to)],["Change set",diff.moves.map(d=>_blockPupilName(d.email)+": "+d.from+" → "+d.to)],
+      ["Leave a set",diff.leavers.map(d=>_blockPupilName(d.email)+" (was "+d.from+")")]];
+    card.appendChild(h("div",{style:{fontWeight:600,fontSize:"12px",margin:"12px 0 4px"}},"Compared with the current import"));
+    lines.forEach(([t,l])=>card.appendChild(h("div",{style:{fontSize:"12px",margin:"2px 0"}},h("b",null,t+" ("+l.length+"): "),l.length?l.join(" · "):"none")));
+  }
+  const status=h("span",{style:{fontSize:"12px",marginLeft:"8px"}});
+  const go=h("button",{className:"btn btn-primary btn-sm",disabled:!!matched.clashes.length||!!matched.unmatched.length,onClick:async()=>{
+    if(R.parsed.sets.some(st=>!R.choices.sets[st.setCode].subject)){toast("Every set needs a subject name","err");return;}
+    go.disabled=true;status.textContent="Saving…";
+    try{
+      const rows=blockImportRows(R.parsed,matched,R.choices,new Date().toISOString());
+      const r=await blocksCommit(rows);
+      logAction("BLOCKS_IMPORT","Year "+ygs.join(", ")+": "+R.parsed.sets.length+" sets, "+new Set(matched.members.map(m=>m.email)).size+" pupils from "+R.file+
+        (hadBefore?" ("+diff.joiners.length+" joined, "+diff.moves.length+" moved, "+diff.leavers.length+" left)":""));
+      window._blkReview=null;toast("Set lists imported"+(r.tidyFailed.length?" (older copies not tidied — harmless)":""));
+      rebuildAdminPreserveScroll();
+    }catch(e){go.disabled=false;status.textContent="Not saved: "+(e.message||e)+". The previous import is still in force.";status.style.color="var(--red)";}
+  }},"Import "+R.parsed.sets.length+" sets");
+  const why=matched.clashes.length?"Fix the clashes first.":matched.unmatched.length?"Choose or leave out every unmatched name first.":"";
+  card.appendChild(h("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginTop:"12px",flexWrap:"wrap"}},go,
+    h("button",{className:"btn btn-ghost btn-sm",onClick:()=>{window._blkReview=null;redraw();}},"Cancel"),status,
+    why?h("span",{style:{fontSize:"12px",color:"var(--amber)"}},why):null));
+}
 const FB_SETUP_SQL=`-- LEX pupil feedback (v159). Run once in the Supabase SQL editor for this project.
 create table if not exists public.lex_feedback (
   id uuid primary key default gen_random_uuid(),
@@ -15187,12 +16024,12 @@ function pupilScheduleRows(pupil,todayYmd){
     const d=dates[di];let name=null;
     for(const k of keys){const v=getEffectiveAllocOnDate(k,di,engMap);if(v){name=v;break;}}
     const ymd=_pupilYmd(d&&d.full);
-    return {di,date:d,name,act:name?findActByName_exact(name):null,ymd,past:ymd<today,isToday:ymd===today};
+    return {di,ne:keys[0],date:d,name,act:name?findActByName_exact(name):null,ymd,past:ymd<today,isToday:ymd===today};
   });
 }
 function _pupilSessionLines(row){
   if(!row.act)return [];
-  return actSessions(row.act).map(s2=>(s2.label?s2.label+" ":"")+(s2.label?s2.name+" · ":"")+
+  return actSessions(row.act,row.ne,row.di).map(s2=>(s2.label?s2.label+" ":"")+(s2.label||s2.block?s2.name+" · ":"")+
     (s2.venue||"Venue TBC")+" · "+s2.time+(s2.lead?" · "+s2.lead:""));
 }
 function renderPortalPending(){
@@ -15418,10 +16255,11 @@ function renderStaffView(){
             const hColor=halfColor(half);
             sec.appendChild(h("div",{style:{fontWeight:600,fontSize:"12px",color:hColor,marginBottom:"8px"}},hLabel));
             const grid=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:"8px"}});
-            hr.forEach(({n,act,date,sess:rowSess})=>{
+            hr.forEach(({n,act,date,sess:rowSess,di:rowDi})=>{
               const col=gc(n);
               const tile=h("div",{style:{background:col+"12",border:"1px solid "+col+"30",borderRadius:"8px",padding:"10px 12px",borderLeft:"3px solid "+col}});
               tile.appendChild(h("div",{style:{fontWeight:600,fontSize:"12px",color:col}},n));
+              blockStaffLines(s.c,n,rowDi,rowSess).forEach(l=>tile.appendChild(h("div",{style:{fontSize:"11px",fontWeight:600,marginTop:"2px"}},l))); // v172
               tile.appendChild(h("div",{style:{fontSize:"11px",color:"var(--text2)",marginTop:"2px"}},date.label));
               if(act){
                 if(act.yg)tile.appendChild(h("div",{style:{fontSize:"10px",color:"var(--text3)"}},"Yr "+act.yg));
@@ -15570,6 +16408,14 @@ const ctrlRow=h("div",{className:"flex mb-12",style:{gap:"8px",flexWrap:"wrap"}}
         actSel.appendChild(h("option",{disabled:true,style:{fontWeight:700}},"── Session B ──"));
         [...compB].sort().forEach(c=>actSel.appendChild(h("option",{value:"comp:"+c+":B"},c+" (B)")));
       }
+      // v172: block timetables — a register per set per session (the component register, filtered)
+      dateActs.filter(a=>a.blocks).forEach(a=>_blockSessionsOf(a).forEach(({sess,comp})=>{
+        const S=sess||"A",sets=blockSessionSets(a,S);if(!sets.length)return;
+        actSel.appendChild(h("option",{disabled:true,style:{fontWeight:700}},"── "+a.n+(sess?" · P"+(sess==="A"?"1":"4"):"")+" · Block "+actBlockFor(a,S)+" sets ──"));
+        sets.forEach(st=>{const ld=staff.find(x=>x.c===st.lead);
+          actSel.appendChild(h("option",{value:"set:"+[a.blocks.yg,actBlockFor(a,S),st.set_code,sess||"AB",comp].join("|")},
+            st.subject+(st.venue?" · "+st.venue:"")+" ("+(ld?ld.n:(st.lead||"lead TBC"))+")"));});
+      }));
       // Standard A+B activities
       if(compAB.size>0){
         if(compA.size>0||compB.size>0)actSel.appendChild(h("option",{disabled:true,style:{fontWeight:700}},"── Full session (A+B) ──"));
@@ -15603,9 +16449,15 @@ const ctrlRow=h("div",{className:"flex mb-12",style:{gap:"8px",flexWrap:"wrap"}}
       const dateHalf=d.half||"S1";
 
       // Detect component mode: "comp:Pilates:B" → componentName="Pilates", compSess="B"
-      const isCompMode=rawVal.startsWith("comp:");
+      // v172: "set:yg|block|set|sess|name" is one block set's register — the component register
+      // (or the whole-day activity's) filtered to the set. Marks keep their usual keys.
+      let blkSet=null;
+      if(rawVal.startsWith("set:")){const p=rawVal.slice(4).split("|");blkSet={yg:p[0],block:p[1],setCode:p[2],sess:p[3],comp:p.slice(4).join("|")};}
+      const isCompMode=rawVal.startsWith("comp:")||!!(blkSet&&blkSet.sess!=="AB");
       let actName,componentName,compSess;
-      if(isCompMode){
+      if(blkSet){
+        actName=blkSet.comp;if(isCompMode){componentName=blkSet.comp;compSess=blkSet.sess;}
+      } else if(isCompMode){
         const parts=rawVal.split(":");componentName=parts[1];compSess=parts[2];
         actName=componentName; // display name
       } else {
@@ -15644,6 +16496,7 @@ const ctrlRow=h("div",{className:"flex mb-12",style:{gap:"8px",flexWrap:"wrap"}}
         }
       }
       pupilsForList.sort(cmpPupilYgSurname);
+      if(blkSet){const keep=pupilsForList.filter(p=>blockSetHas(blkSet.yg,blkSet.block,blkSet.setCode,p.email));pupilsForList.length=0;pupilsForList.push(...keep);}
 
       if(!pupilsForList.length){rosterDiv.appendChild(h("div",{className:"alert alert-info"},"No pupils found for "+actName+" on "+d.label+"."));return;}
 
@@ -15659,6 +16512,12 @@ const ctrlRow=h("div",{className:"flex mb-12",style:{gap:"8px",flexWrap:"wrap"}}
         }
       } else {
         hdr2.appendChild(h("div",{style:{fontWeight:700,fontSize:"14px",color:gc(actName)}},actName));
+      }
+      if(blkSet){ // v172
+        const st=(blockData.sets||[]).find(x=>x.yg===blkSet.yg&&x.set_code===blkSet.setCode&&(x.set_code!==BLOCK_FREE||x.block===blkSet.block||x.block==="*"));
+        const ld=st&&staff.find(x=>x.c===st.lead);
+        hdr2.appendChild(h("div",{style:{fontSize:"13px",fontWeight:700,marginTop:"4px"}},"Block "+blkSet.block+" · "+(st?st.subject:blkSet.setCode)+(st&&st.venue?" · "+st.venue:"")));
+        hdr2.appendChild(h("div",{style:{fontSize:"11px",color:"var(--text2)"}},(blkSet.setCode===BLOCK_FREE?"Pupils with no set in block "+blkSet.block:blkSet.setCode)+" · Lead: "+(ld?ld.n:(st&&st.lead)||"TBC")));
       }
       // Staff allocated — with email link
       const infoRow=h("div",{style:{fontSize:"11px",color:"var(--text2)",marginTop:"2px",display:"flex",gap:"12px",flexWrap:"wrap",alignItems:"center"}});
