@@ -1283,7 +1283,10 @@ var P0_SRC = [
   grab("function _applyCloudBlob(k,got,seq0){", "\r\n}", "_applyCloudBlob"),
   grab("async function _writeBlobKey(k){", "\r\n}", "_writeBlobKey"),
   grab("async function _pushDirtyBlobs(){", "\r\n}", "_pushDirtyBlobs"),
-  grab("function markBlobsForOverwrite(keys){", "\r\n}", "markBlobsForOverwrite"),
+  grab("function markBlobsForOverwrite(keys,label){", "\r\n}", "markBlobsForOverwrite"),
+  grab("function _saveBlobForce(){", "\r\n}", "_saveBlobForce"),
+  grab("function _restorePending(){", "\r\n", "_restorePending"),
+  grab("function _updateRestoreBanner(){", "\r\n}", "_updateRestoreBanner"),
   grab("function _primeBlobBaseline(){", "\r\n}", "_primeBlobBaseline"),
   grab("function _noteDirtyBlobsNow(){", "\r\n}", "_noteDirtyBlobsNow"),
   grab("function _refreshFingerprintsAfterLoad(){", "\r\n}", "_refreshFingerprintsAfterLoad"),
@@ -1292,7 +1295,13 @@ var P0_SRC = [
   grab("async function forceSaveNow(){", "\r\n}", "forceSaveNow"),
   grab("const _ENGINE_INPUT_KEYS=[", "];", "_ENGINE_INPUT_KEYS"),
   grab("async function _engineInputsStale(){", "\r\n}", "_engineInputsStale"),
-  grab("async function _adoptCloudStamps(){", "\r\n}", "_adoptCloudStamps")
+  grab("async function _adoptCloudStamps(){", "\r\n}", "_adoptCloudStamps"),
+  grab("async function _waitForSaveIdle(){", "\r\n", "_waitForSaveIdle"),
+  grab("async function forceSyncNow(){", "\r\n}", "forceSyncNow"),
+  // v176: the real local save (renamed: the harness's saveLocal is a no-op unless a test asks)
+  grab("function _lsSet(key,val){", "\r\n}", "_lsSet"),
+  grab("let _localSaveFailed=false;", "\r\n", "_localSaveFailed"),
+  grab("function saveLocal(){", "\r\n}", "saveLocal").replace("function saveLocal(){", "function _realSaveLocal(){")
 ].join("\n");
 // v175: the branch loadFromSupabase takes when every read fails (a laptop waking, Wi-Fi down).
 var P0_UNREACHABLE = grab("  if(!gotAny){", "\r\n  }", "loadFromSupabase unreachable branch");
@@ -1305,7 +1314,8 @@ var mkClient = (server, ls, opts) => new Function("SERVER", "LS", "OPTS", `
   const conflicts=()=>_blobConflictLog;
   function isStaffView(){return !!OPTS.staff;} function isPublicTimetable(){return false;}
   function updateSyncBadge(){} async function saSyncPerRow(){return true;} async function _reconcileIfStale(){}
-  function _markSupaWrite(){} function _announceSaved(){} function invalidateCaches(){} function saveLocal(){}
+  function _markSupaWrite(){} function _announceSaved(){} function invalidateCaches(){} function saveLocal(){if(OPTS.realSave)_realSaveLocal();}
+  let activityLog=[],allocDateOverrides={};
   function _onAutoUpdateView(){return false;} function _safeAutoRerender(){return false;} function _scheduleSilentRerender(){}
   function _showRemoteUpdateBanner(){} function logAction(){} function _updateSaveGuardBanner(){} function toast(){} function autoSnapshot(){}
   const console={error(){},warn(){},log(){}};
@@ -1326,7 +1336,8 @@ var mkClient = (server, ls, opts) => new Function("SERVER", "LS", "OPTS", `
   // what the tab holds. Called only if the shipped branch below still calls it.
   function loadLocal(){_BLOB_KEYS.forEach(k=>{const raw=localStorage.getItem("lex12-"+k);if(raw)_setStateForKey(k,JSON.parse(raw));});}
   async function refreshUnreachable(){const gotAny=false;${P0_UNREACHABLE}}
-  return {load,loadLocalOnly,refreshUnreachable,engineStale:_engineInputsStale,adopt:_adoptCloudStamps,rawSet:(k,v)=>supaSet("lex12-"+k,v),push:_pushDirtyBlobs,saveSupa,flush:_flushOnUnload,noteDirty:_noteDirtyBlobsNow,
+  return {load,loadLocalOnly,refreshUnreachable,engineStale:_engineInputsStale,adopt:_adoptCloudStamps,
+    forceSync:forceSyncNow,saveLocalNow:()=>saveLocal(),reloadFromLS(){loadLocal();_primeBlobBaseline();},restorePending:_restorePending,rawSet:(k,v)=>supaSet("lex12-"+k,v),push:_pushDirtyBlobs,saveSupa,flush:_flushOnUnload,noteDirty:_noteDirtyBlobsNow,
     markOverwrite:markBlobsForOverwrite,merge:_blobMerge,ABSENT:_ABSENT,conflicts,
     get acts(){return acts;},set acts(v){acts=v;},get ovr(){return allocOverrides;},set ovr(v){allocOverrides=v;},
     get notepad(){return notepadText;},set notepad(v){notepadText=v;},get consent(){return consentMap;},
@@ -2344,12 +2355,98 @@ async function p0v175Tests() {
   t("the engine no longer takes its snapshot after the run", !grab("function runAllocEngineV12(){", "\r\n}\r\n", "runAllocEngineV12").includes('takeSnapshot("Pre-run backup")'));
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// v176 — Force sync, and a restore that has not reached the cloud yet. Invented data.
+async function p0v176Tests() {
+  S("v176 — Force sync pushes; a restore survives a reload until it is in the cloud");
+  const O70 = mkOverrides(70), O17 = mkOverrides(17);
+  const nOvr = o => Object.keys((o && o.a2) || {}).length;
+  // 1. Force sync writes this tab's changes, and later saves still work.
+  {
+    const srv = mkServer({ acts: ACTS0 });
+    const A = mkClient(srv, mkLS()); await A.load();
+    A.acts.find(a => a.id === "A1").cap = 30; A.setPending(true);
+    t("Force sync pushes this tab's changed keys", (await A.forceSync()) === true && srv.get("acts").find(a => a.id === "A1").cap === 30);
+    A.acts.find(a => a.id === "A2").cap = 7; await A.push();
+    t("…and a save after it still goes up", srv.get("acts").find(a => a.id === "A2").cap === 7);
+    t("Force sync no longer empties the last-synced fingerprints (only the declaration remains)", (src.match(/_lastSyncedFingerprints=\{\};/g) || []).length === 1 && has("let _lastSyncedFingerprints={};"));
+  }
+  // 2. Restore, then the tab reloads before the push lands: the restore goes up after the reload.
+  {
+    const srv = mkServer({ allocoverrides: O17, acts: ACTS0 });   // the damaged cloud
+    const ls = mkLS();
+    const A = mkClient(srv, ls, { realSave: true }); await A.load();
+    A.ovr = clone(O70); A.markOverwrite(["allocoverrides"], "backup file from 29 Sept"); A.saveLocalNow();   // restore; no push yet
+    t("restore: pending until it is in the cloud", JSON.stringify(A.restorePending()) === '["allocoverrides"]');
+    const A2 = mkClient(srv, ls, { realSave: true }); A2.reloadFromLS();
+    t("…still pending after a reload", JSON.stringify(A2.restorePending()) === '["allocoverrides"]');
+    await A2.load();
+    t("…the cloud load does not replace the restored data", nOvr(A2.ovr) === 70, nOvr(A2.ovr) + " held");
+    await A2.push();
+    t("…and the next save puts it in the cloud", nOvr(srv.get("allocoverrides")) === 70, nOvr(srv.get("allocoverrides")) + " in the cloud");
+    t("…after which nothing is pending, here or on the next reload", A2.restorePending().length === 0
+      && (() => { const A3 = mkClient(srv, ls, { realSave: true }); A3.reloadFromLS(); return A3.restorePending().length === 0; })());
+  }
+  // 3. …but not beside different data: another tab replaced this browser's copy before the reload.
+  {
+    const srv = mkServer({ allocoverrides: O17 });
+    const ls = mkLS();
+    const A = mkClient(srv, ls, { realSave: true }); await A.load();
+    A.ovr = clone(O70); A.markOverwrite(["allocoverrides"], "backup file from 29 Sept"); A.saveLocalNow();
+    ls.setItem("lex12-allocoverrides", JSON.stringify(mkOverrides(5)));      // another tab's copy
+    const A2 = mkClient(srv, ls, { realSave: true }); A2.reloadFromLS();
+    const before = srv.log.length; await A2.load(); await A2.push();
+    t("a stored restore beside different data is not used to overwrite the cloud", nOvr(srv.get("allocoverrides")) === 17
+      && !srv.log.slice(before).some(l => l.startsWith("PATCH")), srv.log.slice(before).join(";"));
+    t("…and the loss is reported, saying to restore again", A2.conflicts().some(c => /had not reached the cloud.*Restore it again/.test(c.what)));
+  }
+  // 4. A restore goes up even where it equals this tab's last-synced copy (the cloud moved meanwhile).
+  {
+    const srv = mkServer({ allocoverrides: O70 });
+    const A = mkClient(srv, mkLS()), B = mkClient(srv, mkLS()); await A.load(); await B.load();
+    ["pupil1@c.com", "pupil2@c.com", "pupil3@c.com"].forEach(e => delete B.ovr.a2[e]); await B.push();
+    A.ovr = clone(O70); A.markOverwrite(["allocoverrides"], "auto-snapshot"); await A.push();
+    t("a restore matching this tab's old copy still replaces the cloud's", nOvr(srv.get("allocoverrides")) === 70, nOvr(srv.get("allocoverrides")) + " in the cloud");
+    // The same with a refresh landing between the restore and its save.
+    const srv2 = mkServer({ allocoverrides: O70 });
+    const C = mkClient(srv2, mkLS()), D = mkClient(srv2, mkLS()); await C.load(); await D.load();
+    ["pupil1@c.com", "pupil2@c.com", "pupil3@c.com"].forEach(e => delete D.ovr.a2[e]); await D.push();
+    C.ovr = clone(O70); C.markOverwrite(["allocoverrides"], "auto-snapshot"); await C.load(); await C.push();
+    t("…even when a refresh lands before its save", nOvr(C.ovr) === 70 && nOvr(srv2.get("allocoverrides")) === 70, nOvr(srv2.get("allocoverrides")) + " in the cloud");
+  }
+  // 5. Keys the restore did not touch are not overwritten.
+  {
+    const srv = mkServer({ allocoverrides: O17, acts: ACTS0 });
+    const A = mkClient(srv, mkLS()), B = mkClient(srv, mkLS()); await A.load(); await B.load();
+    B.acts.find(a => a.id === "A3").n = "Canoeing"; await B.push();
+    A.ovr = clone(O70); A.markOverwrite(["allocoverrides"], "backup file"); await A.push();
+    t("restoring overrides leaves another device's newer activities alone", srv.get("acts").find(a => a.id === "A3").n === "Canoeing" && nOvr(srv.get("allocoverrides")) === 70);
+  }
+  // 6. A failed push leaves it pending; a later one clears it.
+  {
+    const srv = mkServer({ allocoverrides: O17 });
+    let down = false;
+    const net = Object.assign({}, srv, { fetch: async (u, o) => { if (down) throw new TypeError("Failed to fetch"); return srv.fetch(u, o); } });
+    const A = mkClient(net, mkLS()); await A.load();
+    A.ovr = clone(O70); A.markOverwrite(["allocoverrides"], "backup file"); down = true; await A.push();
+    t("restore: still pending after a failed push", A.restorePending().length === 1 && nOvr(srv.get("allocoverrides")) === 17);
+    down = false; await A.push();
+    t("…and cleared by the one that lands", A.restorePending().length === 0 && nOvr(srv.get("allocoverrides")) === 70);
+  }
+  t("the three restores each name the keys they restored", !has("markBlobsForOverwrite();") && (src.match(/markBlobsForOverwrite\(\[/g) || []).length === 3);
+  t("a restore waiting to go up is shown at startup and after each save and load",
+    has("try{_updateRestoreBanner();_showBlobConflicts();}catch(_){} // v176") && has("_showBlobConflicts();_updateRestoreBanner();\r\n  return {wrote,failed};"));
+  t("Sync Health stops showing sa as pending after a per-row save", has("if(allOk){_markSupaWrite();_lastSyncedFingerprints.sa=_saFp;}"));
+}
+
 // ── summary ──────────────────────────────────────────────────────────────────
 (async () => {
   try { await p0Tests(); }
   catch (e) { fail++; failures.push("v169 P0 → the simulation threw: " + e.message); console.log("  FAIL  the P0 simulation threw — " + (e.stack || e)); }
   try { await p0v175Tests(); }
   catch (e) { fail++; failures.push("v175 P0 → the simulation threw: " + e.message); console.log("  FAIL  the v175 P0 simulation threw — " + (e.stack || e)); }
+  try { await p0v176Tests(); }
+  catch (e) { fail++; failures.push("v176 → the tests threw: " + e.message); console.log("  FAIL  the v176 tests threw — " + (e.stack || e)); }
   try { await blockTests(); }
   catch (e) { fail++; failures.push("v171 blocks → the tests threw: " + e.message); console.log("  FAIL  the block tests threw — " + (e.stack || e)); }
   try { blockUseTests(); }

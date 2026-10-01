@@ -965,7 +965,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v175';
+const CURRENT_VERSION = 'v176';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -1948,8 +1948,7 @@ const _ENGINE_INPUT_KEYS=["allocoverrides","formdata","acts","pupils","dates"];
 async function _engineInputsStale(){
   if(!supaClient)return null;
   // This tab's own save changes the cloud's stamp: let it land (and record the new stamp) first.
-  for(let i=0;i<50&&_supaWriteInFlight;i++)await new Promise(r=>setTimeout(r,200));
-  if(_supaWriteInFlight)return null;
+  if(!(await _waitForSaveIdle()))return null;
   if(_hasPendingSupaWrite&&!(await forceSaveNow()))return null;
   try{
     const res=await fetch(`${supaClient.url}/rest/v1/lex_data?key=in.(${_ENGINE_INPUT_KEYS.map(k=>"lex12-"+k).join(",")})&select=key,updated_at`,{
@@ -1960,6 +1959,19 @@ async function _engineInputsStale(){
     // No stamp here = this tab's version is unknown, which is not "current".
     return _ENGINE_INPUT_KEYS.filter(k=>!_hasStamp(k)||(k in cloud?cloud[k]!==_blobStamps[k]:_blobStamps[k]!==null));
   }catch(e){console.error("_engineInputsStale",e.message||e);return null;}
+}
+// v176: wait for this tab's in-flight save to finish (up to ~10 s). false if it is still running.
+async function _waitForSaveIdle(){for(let i=0;i<50&&_supaWriteInFlight;i++)await new Promise(r=>setTimeout(r,200));return !_supaWriteInFlight;}
+// v176: "Force sync now" emptied _lastSyncedFingerprints and called saveSupa. Since v169 a key with
+// no fingerprint is never written (never write blind), so it pushed nothing; every later save
+// then skipped every key until a reload, and the next refresh took the cloud's copy over anything
+// unsaved — a restore included. Now it pushes what this tab has changed (and any restore waiting
+// to go up) through the normal checked writer, and says whether that worked.
+async function forceSyncNow(){
+  if(!(await _waitForSaveIdle()))return false;
+  let saOk=true;try{saOk=await saSyncPerRow();}catch(e){saOk=false;console.error("forceSyncNow sa",e);}
+  const ok=await forceSaveNow();
+  return saOk&&ok;
 }
 // Run the engine only on current data. auto: a silent re-run after an override change — it is
 // skipped rather than asking. Returns true if the engine ran.
@@ -2102,6 +2114,9 @@ let _blobStampH={};        // v175: key → hash of the value its stamp was load
 let _blobDirtyBase={};     // key → {stamp,h}: unsaved edits made on version `stamp`, value hash h (kept across a reload)
 let _blobWriteSeq={};      // key → this tab's successful writes, so a read that crossed one is ignored
 let _blobForce=new Set();  // keys a confirmed restore/import may overwrite (markBlobsForOverwrite)
+let _blobForceInfo={};     // v176: key → {label,at} of the restore that forced it (for the banner)
+let _blobForceOwned=false; // v176: this tab wrote the stored restore record, so it may clear it
+let _restoreWasPending=false;
 let _blobTakenClean=new Set();
 let _blobMergedUnder=false;
 let _blobConflictLog=[];
@@ -2117,6 +2132,7 @@ function _loadBlobMeta(){
   try{_blobDirtyBase=JSON.parse(localStorage.getItem("lex12-blobdirty")||"{}")||{};}catch(_){_blobDirtyBase={};}
 }
 function _saveBlobMeta(){
+  _saveBlobForce();
   const ver={};
   Object.keys(_blobStamps).forEach(k=>{const s=_lastSyncedFingerprints[k];if(typeof s==="string")ver[k]=[_blobStamps[k],_strHash(s)];});
   try{localStorage.setItem("lex12-blobver",JSON.stringify(ver));localStorage.setItem("lex12-blobdirty",JSON.stringify(_blobDirtyBase));}catch(_){}
@@ -2308,6 +2324,7 @@ function _applyCloudBlob(k,got,seq0){
   if(got.stamp===null){_blobStamps[k]=null;return;}       // no row yet: keep ours; an edit will insert it
   const cloud=got.value;
   if(!_blobTypeOk(k,cloud)){console.warn("[v169] ignoring cloud "+k+": not the expected type");return;}
+  if(_blobForce.has(k)){_blobStamps[k]=got.stamp;return;} // v176: a restore waiting to go up, even where it matches this tab's last-synced copy
   const local=_stateForKey(k);let lfp=null;try{lfp=JSON.stringify(local);}catch(_){}
   const synced=_lastSyncedFingerprints[k],rec=_blobDirtyBase[k],cloudFp=JSON.stringify(cloud);
   if(synced!==undefined&&lfp!==synced){
@@ -2360,7 +2377,7 @@ async function _pushDirtyBlobs(){
     const synced=_lastSyncedFingerprints[k];
     if(synced===undefined)return;                        // nothing read to compare with: never push blind
     const v=_stateForKey(k);let fp;try{fp=JSON.stringify(v);}catch(_){return;}
-    if(fp===synced)return;
+    if(fp===synced&&!_blobForce.has(k))return;          // v176: a restore goes up even if it matches the last-synced copy
     // v78 save-guard: refuse to overwrite a previously-non-empty cloud key with an empty value.
     if(_isEmptyValue(v)&&_loadedNonEmpty[k]){
       if(!_saveGuardBlocked[k]){_saveGuardBlocked[k]=true;newlyBlocked.push(k);}
@@ -2372,7 +2389,7 @@ async function _pushDirtyBlobs(){
     dirty.push(k);
   });
   if(newlyBlocked.length||guardCleared){try{_updateSaveGuardBanner();}catch(_){}}
-  if(!dirty.length)return {wrote:0,failed:[]};
+  if(!dirty.length){_updateRestoreBanner();return {wrote:0,failed:[]};}
   _saveBlobMeta();
   _blobMergedUnder=false;
   let wrote=0;const failed=[];
@@ -2381,13 +2398,48 @@ async function _pushDirtyBlobs(){
     try{invalidateCaches();saveLocal();}catch(_){}
     try{if(_onAutoUpdateView()&&_safeAutoRerender())_scheduleSilentRerender();else _showRemoteUpdateBanner();}catch(_){}
   }
-  _showBlobConflicts();
+  _showBlobConflicts();_updateRestoreBanner();
   return {wrote,failed};
 }
 // A confirmed restore or import replaces what is there on purpose, so it may overwrite newer
 // versions — still through the version check, replacing exactly the version it has just read.
-function markBlobsForOverwrite(keys){
-  (keys||_BLOB_KEYS).forEach(k=>{_blobForce.add(k);if(_lastSyncedFingerprints[k]===undefined)_lastSyncedFingerprints[k]="";});
+// v176: callers name the keys they actually restored. Forcing every key wrote this tab's copy of
+// anything the restore did not touch (staff, venues…) over newer versions from other devices.
+function markBlobsForOverwrite(keys,label){
+  const at=new Date().toISOString();
+  (keys||_BLOB_KEYS).forEach(k=>{_blobForce.add(k);_blobForceInfo[k]={label:label||"a restore",at};if(_lastSyncedFingerprints[k]===undefined)_lastSyncedFingerprints[k]="";});
+  _updateRestoreBanner();
+}
+// v176: _blobForce lived in memory only. A reload after a restore but before its push landed
+// started from local storage as the baseline, so the restored data looked "clean" and the cloud
+// load replaced it. The permission is now stored with a hash of the restored value as this tab
+// holds it; a reload honours it only beside exactly that value — another tab may have replaced
+// this browser's copy since, or a full local storage may never have taken it.
+function _saveBlobForce(){
+  if(!_blobForce.size&&!_blobForceOwned)return;           // another tab's record is not ours to clear
+  const rec={};
+  _blobForce.forEach(k=>{try{const i=_blobForceInfo[k]||{};rec[k]={h:_strHash(JSON.stringify(_stateForKey(k))),label:i.label||"a restore",at:i.at||""};}catch(_){}});
+  try{
+    if(_blobForce.size){localStorage.setItem("lex12-blobforce",JSON.stringify(rec));_blobForceOwned=true;}
+    else{localStorage.removeItem("lex12-blobforce");_blobForceOwned=false;}
+  }catch(_){}
+}
+function _restorePending(){return _BLOB_KEYS.filter(k=>_blobForce.has(k));}
+// v176: until a restore's push lands, say so — on every screen, not only in Settings.
+function _updateRestoreBanner(){
+  const keys=_restorePending();
+  if(keys.length)_restoreWasPending=true;
+  else if(_restoreWasPending){_restoreWasPending=false;try{logAction("RESTORE_SAVED","The restore reached the cloud");toast("Restore saved to the cloud ✓");}catch(_){}}
+  if(typeof document==="undefined"||!document.body)return;
+  let b=document.getElementById("lex-restore-banner");
+  if(!keys.length){if(b)b.remove();return;}
+  if(!b){b=h("div",{id:"lex-restore-banner",style:{position:"sticky",top:"0",zIndex:"9998",background:"#b45309",color:"#fff",padding:"10px 16px",fontSize:"12px",lineHeight:"1.5"}});document.body.insertBefore(b,document.body.firstChild);}
+  const from=[...new Set(keys.map(k=>(_blobForceInfo[k]||{}).label||"a restore"))].join("; ");
+  b.innerHTML="";
+  b.appendChild(h("div",{style:{fontWeight:"700"}},"⚠ Restore NOT saved to the cloud yet ("+from+")"));
+  b.appendChild(h("div",null,"Still to save: "+keys.map(k=>_BLOB_LABEL[k]||k).join(", ")+". Other devices still see the old data. Keep this tab open until this message goes."));
+  b.appendChild(h("button",{style:{marginTop:"6px",background:"#fff",color:"#b45309",border:"none",padding:"4px 10px",borderRadius:"4px",fontWeight:"600",cursor:"pointer",fontSize:"12px"},
+    onClick:async()=>{if(!(await forceSyncNow()))toast("Still not saved — check the connection and try again","err");}},"Save to the cloud now"));
 }
 // Record what the cloud holds now as this tab's baseline (after a deliberate push-everything).
 async function _adoptCloudStamps(){
@@ -2411,6 +2463,20 @@ function _primeBlobBaseline(){
     if(h!==null&&(h===_blobStampH[k]||(rec&&rec.stamp===_blobStamps[k]&&rec.h===h)))return;
     delete _blobStamps[k];delete _blobStampH[k];
   });
+  // v176: a restore whose push had not landed when this browser last closed (_saveBlobForce).
+  let fr={};try{fr=JSON.parse(localStorage.getItem("lex12-blobforce")||"{}")||{};}catch(_){fr={};}
+  Object.keys(fr).forEach(k=>{
+    const r=fr[k],fp=_lastSyncedFingerprints[k];if(!r||!_BLOB_KEYS.includes(k))return;
+    _blobForceOwned=true;
+    if(typeof fp==="string"&&_strHash(fp)===r.h){
+      _blobForce.add(k);_blobForceInfo[k]={label:r.label,at:r.at};
+      _lastSyncedFingerprints[k]="";                        // unsaved: the cloud load must not replace it
+    }else{
+      _blobConflictLog.push({key:k,what:(_BLOB_LABEL[k]||k)+": the restore from "+r.label+" had not reached the cloud, and this browser's copy has changed since. Restore it again.",mine:null,theirs:null,at:new Date(),whole:true});
+      try{logAction("RESTORE_LOST",(_BLOB_LABEL[k]||k)+" from "+r.label+": not in the cloud, and no longer held here");}catch(_){}
+    }
+  });
+  _saveBlobForce();
 }
 // When the tab goes away mid-save, remember which keys hold unsaved edits (and exactly which
 // version of them) so a reload can finish the write — if nothing has changed meanwhile.
@@ -2930,6 +2996,9 @@ async function saSyncPerRow(){
   if(!supaClient)return true;
   if(isStaffView()||isPublicTimetable())return true;
   if(_saLastWritten===null){_saLastWritten={};Object.keys(sa).forEach(k=>{_saLastWritten[k]=JSON.stringify(_saValObj(sa[k]));});return true;}
+  // v176: sa is per-row, but Sync Health compares it with _lastSyncedFingerprints, which only a
+  // full load refreshed — so after any per-row save it showed "sa pending" until a reload.
+  const _saFp=JSON.stringify(sa);
   const nowIso=new Date().toISOString();const upserts=[];const deletes=[];
   Object.keys(sa).forEach(k=>{
     const cur=JSON.stringify(_saValObj(sa[k]));
@@ -2941,7 +3010,7 @@ async function saSyncPerRow(){
   Object.keys(_saLastWritten).forEach(k=>{
     if(!(k in sa)){const kp=_saKeyParts(k);if(!isNaN(kp.di)&&kp.code)deletes.push({pfx:PFX,di:kp.di,code:kp.code,sess:kp.sess,deleted:true,updated_at:nowIso,_k:k});}
   });
-  if(upserts.length===0&&deletes.length===0)return true;
+  if(upserts.length===0&&deletes.length===0){_lastSyncedFingerprints.sa=_saFp;return true;}
   let allOk=true;
   try{
     for(let i=0;i<upserts.length;i+=500){
@@ -2960,7 +3029,7 @@ async function saSyncPerRow(){
       if(!res.ok){allOk=false;console.error("saSyncPerRow delete HTTP",res.status,await res.text());}
       else{slice.forEach(d=>{delete _saLastWritten[d._k];});}
     }
-    if(allOk)_markSupaWrite();
+    if(allOk){_markSupaWrite();_lastSyncedFingerprints.sa=_saFp;}
   }catch(e){allOk=false;console.error("saSyncPerRow error",e.message||e);}
   return allOk;
 }
@@ -3178,8 +3247,8 @@ async function loadFromSupabase(){
   }
   // v169: a key merged or kept above still holds this tab's edits; write them (conditionally).
   _saveBlobMeta();
-  if(_BLOB_KEYS.some(k=>{const s=_lastSyncedFingerprints[k];if(s===undefined)return false;try{return JSON.stringify(_stateForKey(k))!==s;}catch(_){return false;}}))saveSupa();
-  _showBlobConflicts();
+  if(_blobForce.size||_BLOB_KEYS.some(k=>{const s=_lastSyncedFingerprints[k];if(s===undefined)return false;try{return JSON.stringify(_stateForKey(k))!==s;}catch(_){return false;}}))saveSupa();
+  _showBlobConflicts();_updateRestoreBanner();
   // v52c: remember table summaries so auto-refresh can detect "nothing changed" and skip pulls
   if(attSummary)_attLastSeen=attSummary;
   if(ovrSummary)_ovrLastSeen=ovrSummary;
@@ -3255,6 +3324,7 @@ function saveLocal(){
   _lsSet("lex12-allocres",JSON.stringify(allocRes));
   // v64: track when localStorage was last written so loadFromSupabase can detect if local is newer
   _lsSet("lex12-localsavets",String(Date.now()));
+  _saveBlobForce(); // v176: after the data, so its hash describes what was just stored
   if(_localSaveFailed){ syncStatus="error"; try{updateSyncBadge();}catch(_){}}
 }
 // v107: lightweight per-row save. The cross-device refresh path only mutates
@@ -3965,6 +4035,7 @@ async function initData(){
     if(appEl){appEl.innerHTML='<div style="padding:40px;font-family:sans-serif;color:#dc2626;"><h2>LEX failed to render</h2><p>'+String(e&&(e.message||e))+'</p><p>Open the browser console (F12) for details, then reload the page.</p></div>';}
   }
   try{updateSyncBadge();renderPrefPanel();}catch(e){console.error("initData: badge/pref failed",e&&(e.message||e));}
+  try{_updateRestoreBanner();_showBlobConflicts();}catch(_){} // v176: a restore still waiting to go up, or one that was lost
 
   // STAGE 2: sync with Supabase in the BACKGROUND (non-blocking).
   // When complete, the data is updated and the current view is re-rendered.
@@ -17349,6 +17420,9 @@ function renderAdminSync(el){
     ));
     healthCard.appendChild(statusRow);
 
+    const _rp=_restorePending(); // v176
+    if(_rp.length)healthCard.appendChild(h("div",{style:{padding:"8px 12px",background:"var(--red-soft)",borderRadius:"4px",marginBottom:"8px",fontSize:"12px",color:"var(--text2)",lineHeight:1.5}},
+      h("strong",{style:{color:"var(--red)"}},"⚠ Restore not saved to the cloud yet: "),_rp.map(k=>_BLOB_LABEL[k]||k).join(", ")+". Other devices still see the old data — use Force sync now, and keep this tab open until it clears."));
     if(dirtyKeys.length>0){
       const isFirst=Object.keys(_lastSyncedFingerprints).length===0;
       const dirtyBox=h("div",{style:{padding:"8px 12px",background:"var(--amber-soft)",borderRadius:"4px",marginBottom:"8px",fontSize:"12px",color:"var(--text2)",lineHeight:1.5}});
@@ -17368,15 +17442,10 @@ function renderAdminSync(el){
     // Action buttons
     const actBtnRow=h("div",{style:{display:"flex",gap:"8px",flexWrap:"wrap"}});
     actBtnRow.appendChild(h("button",{className:"btn btn-primary btn-sm",onClick:async()=>{
-      toast("Force syncing local data to cloud...");
-      // Reset fingerprints so saveSupa writes everything
-      _lastSyncedFingerprints={};
-      saveSupa();
-      // Wait a bit then refresh display
-      setTimeout(()=>{
-        const m=document.querySelector(".main");if(m){m.innerHTML="";renderAdminSync(m);}
-        toast(syncStatus==="online"?"Force sync complete ✓":"Force sync had issues — check Sync Status above");
-      },1500);
+      toast("Saving this tab's changes to the cloud...");
+      const ok=await forceSyncNow(); // v176: see forceSyncNow — this used to push nothing
+      const m=document.querySelector(".main");if(m){m.innerHTML="";renderAdminSync(m);}
+      if(ok)toast("Saved to the cloud ✓");else toast("Not everything was saved — see Sync Health above","err");
     }},"Force sync now"));
     actBtnRow.appendChild(h("button",{className:"btn btn-ghost btn-sm",onClick:async()=>{
       toast("Pulling fresh data from Supabase...");
@@ -17647,7 +17716,12 @@ function renderAdminSync(el){
       if(typeof data.notepad==="string")notepadText=data.notepad;
       if(data.attendance&&typeof data.attendance==="object")attendance=data.attendance;
       if(Array.isArray(data.activityLog))activityLog=data.activityLog;
-      markBlobsForOverwrite(); // v169: a confirmed restore replaces newer versions on purpose
+      // v169: a confirmed restore replaces newer versions on purpose. v176: only the keys it restored.
+      markBlobsForOverwrite([["acts",Array.isArray(data.acts)],["staff",Array.isArray(data.staff)],["pupils",Array.isArray(data.pupils)],["dates",Array.isArray(data.dates)],
+        ["priorytd",!!(data.priorYTD&&typeof data.priorYTD==="object")],["allocoverrides",!!(data.allocOverrides&&typeof data.allocOverrides==="object")],
+        ["allochistory",Array.isArray(data.allocHistory)],["formdata",Array.isArray(data.formData)],["allocres",Array.isArray(data.allocRes)||data.allocRes===null],
+        ["venues",Array.isArray(data.venues)],["consentmap",!!(data.consentMap&&typeof data.consentMap==="object")],["subgroups",Array.isArray(data.savedSubGroups)],
+        ["notepad",typeof data.notepad==="string"]].filter(x=>x[1]).map(x=>x[0]),"backup file from "+when);
       saveAll();
       // v174: set lists — written back as a new import; a backup without them keeps the current ones.
       const _br=blockRestoreRows(data.blocks,new Date().toISOString());
@@ -17741,7 +17815,8 @@ function renderAdminSync(el){
         if(snap.consentMap)consentMap=snap.consentMap;
         if(snap.attendance)attendance=snap.attendance;
         if(snap.dates)dates=snap.dates;
-        markBlobsForOverwrite(); // v169
+        markBlobsForOverwrite([["acts",!!snap.acts],["allocres",snap.allocRes!==undefined],["allocoverrides",!!snap.allocOverrides],["pupils",!!snap.pupils],
+          ["formdata",!!snap.formData],["consentmap",!!snap.consentMap],["dates",!!snap.dates]].filter(x=>x[1]).map(x=>x[0]),"auto-snapshot from "+when.toLocaleString()); // v169, v176
         saveAll();
         logAction("RESTORE","Auto-snapshot restored from "+snap.ts);
         toast("Restored from "+when.toLocaleString());
@@ -18168,7 +18243,7 @@ function renderAdminLog(el){
           acts=d.acts;sa=d.sa;allocRes=d.allocRes||null;
           allocOverrides=d.allocOverrides;allocDateOverrides=d.allocDateOverrides;
           if(d.pupils)pupils=d.pupils;
-          markBlobsForOverwrite();saveAll();logAction("RESTORE","Restored snapshot: "+snap.label); // v169
+          markBlobsForOverwrite(["acts","allocres","allocoverrides"].concat(d.pupils?["pupils"]:[]),"snapshot “"+snap.label+"”");saveAll();logAction("RESTORE","Restored snapshot: "+snap.label); // v169, v176
           toast("Restored: "+snap.label);render();
         }},"Restore"),
         h("button",{className:"btn btn-danger btn-xs",onClick:()=>{
