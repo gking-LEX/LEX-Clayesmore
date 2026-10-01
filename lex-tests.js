@@ -2818,6 +2818,302 @@ async function v178Tests() {
   t("Cloud Sync shows the lock's state", has("  el.appendChild(_lockStatusCard()); // v178"));
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// v179 — cloud snapshots (lex_snapshots). mkSnapServer stands in for the table as
+// LEX-snapshots.sql sets it up: inserts and reads only (an update or delete through the key is
+// refused), one daily snapshot per day, and after each insert the 14 newest daily and the 20
+// newest others kept. The SQL text is checked against those rules below. The app side is the
+// shipped code. All names, emails and activities are invented.
+var SNAP_SRC = [
+  grab("function h(tag,attrs,...ch){", "\r\n}", "h"),
+  grab("const CURRENT_VERSION = '", "';", "CURRENT_VERSION"),
+  grab("const _BLOB_LABEL={", "};", "_BLOB_LABEL"),
+  grab("function _logUuid(){", "\r\n}", "_logUuid"),
+  grab("function _deviceLabel(uaIn){", "\r\n}", "_deviceLabel"),
+  grab("function _lexBlocked(){", "\r\n", "_lexBlocked"),
+  grab("let _snapStatus={state:\"unknown\"};", "let _snapLastAction=0;", "v179 state"),
+  grab("function _londonDay(d){", "\r\n}", "_londonDay"),
+  grab("function _fullBackupPayload(withLocalSnapshots){", "\r\n}", "_fullBackupPayload"),
+  grab("function _snapshotSummary(p){", "\r\n}", "_snapshotSummary"),
+  grab("function _snapshotCountsText(s){", "\r\n}", "_snapshotCountsText"),
+  grab("function _snapshotDrops(newer,older){", "\r\n}", "_snapshotDrops"),
+  grab("async function _gzipB64(str){", "\r\n}", "_gzipB64"),
+  grab("async function _gunzipB64(b64){", "\r\n}", "_gunzipB64"),
+  grab("function _snapHeaders(extra){", "\r\n", "_snapHeaders"),
+  grab("function _snapError(status,t){", "\r\n}", "_snapError"),
+  grab("async function takeCloudSnapshot(kind,reason){", "\r\n}", "takeCloudSnapshot"),
+  grab("async function snapshotBeforeAction(what){", "\r\n}", "snapshotBeforeAction"),
+  grab("async function _snapshotBeforeRun(auto){", "\r\n}", "_snapshotBeforeRun"),
+  grab("async function _dailyCloudSnapshot(){", "\r\n}", "_dailyCloudSnapshot"),
+  grab("function _dailyCloudSnapshotTick(){", "\r\n}", "_dailyCloudSnapshotTick"),
+  grab("function _updateSnapshotBanner(){", "\r\n}", "_updateSnapshotBanner"),
+  grab("function _paintSnapBadge(b){", "\r\n}", "_paintSnapBadge"),
+  grab("function _localBackupNudge(){", "\r\n}", "_localBackupNudge"),
+  grab("async function snapshotsLoad(limit){", "\r\n}", "snapshotsLoad"),
+  grab("async function snapshotData(id){", "\r\n}", "snapshotData"),
+  grab("async function _restoreFullBackup(data,label){", "\r\n}", "_restoreFullBackup"),
+  grab("async function runAllocationChecked(auto){", "\r\n}", "runAllocationChecked")
+].join("\n");
+var mkSnapServer = () => {
+  const st = { rows: [], missing: false, down: false, hideDaily: false, clock: Date.parse("2026-10-05T07:00:00Z"), posts: 0, gets: 0, reqs: 0 };
+  const resp = (status, body) => ({ ok: status < 300, status, json: async () => body, text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
+    headers: { get: () => null }, clone() { return this; } });
+  const fetch = async (url, o) => {
+    o = o || {};
+    const m = String(o.method || "GET").toUpperCase(), q = new URL(url).searchParams;
+    st.reqs++;
+    if (st.down) throw new TypeError("Failed to fetch");
+    if (st.missing) return resp(404, '{"code":"42P01","message":"relation \\"public.lex_snapshots\\" does not exist"}');
+    if (m === "PATCH" || m === "DELETE") return resp(403, '{"code":"42501","message":"permission denied for table lex_snapshots"}');
+    if (m === "POST") {
+      st.posts++;
+      const r = JSON.parse(o.body);
+      if (r.kind === "daily" && st.rows.some(x => x.pfx === r.pfx && x.kind === "daily" && x.day === r.day))
+        return resp(409, '{"code":"23505","message":"duplicate key value violates unique constraint \\"lex_snapshots_one_daily\\""}');
+      st.rows.push(Object.assign({}, r, { created_at: new Date(st.clock += 1000).toISOString() }));
+      for (const daily of [true, false]) {          // retention, per system: 14 daily, 20 others
+        const keep = new Set(st.rows.filter(x => (x.kind === "daily") === daily).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, daily ? 14 : 20));
+        st.rows = st.rows.filter(x => (x.kind === "daily") !== daily || keep.has(x));
+      }
+      return resp(201, "");
+    }
+    st.gets++;
+    let out = st.rows.filter(r => ["pfx", "kind", "day", "id"].every(f => !q.get(f) || "eq." + r[f] === q.get(f)));
+    if (st.hideDaily && q.get("kind") === "eq.daily") out = [];       // two admins checking at the same moment
+    out = out.slice().sort((a, b) => b.created_at.localeCompare(a.created_at));
+    const sel = (q.get("select") || "").split(",").filter(Boolean);
+    return resp(200, out.slice(0, +q.get("limit") || 1000).map(r => sel.length ? Object.fromEntries(sel.map(k => [k, r[k]])) : r));
+  };
+  return { fetch, st };
+};
+var SNAP_FIX = () => ({
+  acts: [{ id: "g", n: "Golf", di: [0, 1] }, { id: "f", n: "Fencing", di: [0] }],
+  staff: [{ c: "AAA", n: "Ann Able" }, { c: "BBB", n: "Bo Bee" }],
+  sa: { "0|AAA": "Golf", "1|AAA": "Golf", "0|BBB": "Fencing" },
+  pupils: [{ email: "p1@example.test" }, { email: "p2@example.test" }, { email: "p3@example.test" }, { email: "p4@example.test" }],
+  dates: [{ label: "Sat 3 Oct", half: "A1" }, { label: "Sat 7 Nov", half: "A2" }],
+  priorYTD: {},
+  allocOverrides: { a1: { "p1@example.test": "Golf", "p2@example.test": "Golf", "p3@example.test": "Fencing" }, a2: { "p1@example.test": "Fencing", "p4@example.test": "Golf" },
+    _reason: { a1: { "p1@example.test": { to: "Golf", why: "clash" }, "p2@example.test": { to: "Golf", why: "parent request" } }, a2: { "p4@example.test": { to: "Golf", why: "medical" } } } },
+  allocDateOverrides: { "0|p1@example.test": "Fencing", "1|p2@example.test": "__UNASSIGNED__" },
+  allocHistory: [], formData: [{ email: "p1@example.test" }, { email: "p2@example.test" }], allocRes: [{ email: "p1@example.test", half: "A1", act: "Golf" }],
+  venues: [{ name: "Hall" }], consentMap: { "p1@example.test": { golf: true }, "p2@example.test": { golf: true }, "p3@example.test": {} },
+  savedSubGroups: [], notepadText: "invented notes",
+  attendance: { "0|Golf|p1@example.test": { a: "P", b: "L" }, "0|Golf|p2@example.test": { a: "A", b: "" }, "1|Golf|p1@example.test": { a: "", b: "" } },
+  blocks: { batches: { "10": "b1" }, sets: [{ yg: "10", set_code: "10A" }, { yg: "10", set_code: "10B" }], members: [] }
+});
+// One admin's copy of LEX: the shipped snapshot, restore and run code over its own state. W: the
+// page (fetch, local storage, the clock as W.now).
+var mkSnapApp = (W, O) => new Function("W", "O", `
+  class Node{}
+  class El extends Node{constructor(t){super();this.tagName=String(t).toUpperCase();this.kids=[];this.style={};this.attrs={};this._t="";this.parent=null;this.id="";this.on={};this.className="";}
+    get textContent(){return this._t+this.kids.map(k=>k.textContent).join("");} set textContent(v){this._t=String(v);this.kids=[];}
+    set innerHTML(v){this._t="";this.kids=[];} get firstChild(){return this.kids[0]||null;}
+    appendChild(c){c.parent=this;this.kids.push(c);return c;}
+    insertBefore(c,ref){c.parent=this;const i=this.kids.indexOf(ref);this.kids.splice(i<0?this.kids.length:i,0,c);return c;}
+    remove(){if(this.parent){this.parent.kids=this.parent.kids.filter(k=>k!==this);this.parent=null;}}
+    setAttribute(k,v){this.attrs[k]=String(v);if(k==="id")this.id=String(v);} addEventListener(t,f){this.on[t]=f;}
+    find(f){if(f(this))return this;for(const k of this.kids){const r=k.find?k.find(f):null;if(r)return r;}return null;}}
+  class Txt extends Node{constructor(s){super();this.textContent=s;}}
+  const body=new El("body");
+  const document={body,createElement:t=>new El(t),createTextNode:s=>new Txt(s),getElementById:id=>body.find(e=>e.id===id),querySelector:()=>null};
+  const window=W,localStorage=W.localStorage,navigator={userAgent:"Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0 Safari/537.36"};
+  const fetch=(u,o)=>W.fetch(u,o);
+  class Date extends globalThis.Date{constructor(...a){if(a.length)super(...a);else super(W.now);} static now(){return W.now;}}
+  const supaClient={url:"https://db.test",key:"k"},PFX="lex12";
+  const S0=JSON.parse(JSON.stringify(O.s));
+  let acts=S0.acts,staff=S0.staff,sa=S0.sa,pupils=S0.pupils,dates=S0.dates,priorYTD=S0.priorYTD,allocOverrides=S0.allocOverrides,
+      allocDateOverrides=S0.allocDateOverrides,allocHistory=S0.allocHistory,formData=S0.formData,allocRes=S0.allocRes,venues=S0.venues,
+      consentMap=S0.consentMap,savedSubGroups=S0.savedSubGroups,notepadText=S0.notepadText,attendance=S0.attendance,activityLog=[],snapshots=[{ts:"x",label:"local"}];
+  const blocks=S0.blocks;
+  const R={log:[],toasts:[],confirms:[],engine:0,engineAt:[],forced:[],saved:0,localSnaps:[]};
+  function logAction(a,d){R.log.push(a+": "+(d||""));}
+  function toast(m){R.toasts.push(m);}
+  function confirm(m){R.confirms.push(m);return O.confirm?O.confirm(m):true;}
+  function isStaffView(){return !!O.staff;} function isPublicTimetable(){return false;}
+  function blockBackupPayload(){return JSON.parse(JSON.stringify(blocks));}
+  async function blocksLoad(){} function blockRestoreRows(){return null;} async function blocksCommit(){}
+  function takeSnapshot(l){R.localSnaps.push(l);return true;}
+  function markBlobsForOverwrite(keys){R.forced.push(...keys);}
+  function saveAll(){R.saved++;} function render(){} function _goToSyncCard(){}
+  async function _engineInputsStale(){return [];} async function _refreshBeforeEdit(){}
+  function runAllocEngineV12(){R.engine++;R.engineAt.push(W.rows?W.rows():0);}
+  const console={error(){},warn(){},log(){}};
+  ${SNAP_SRC}
+  return {R,document,take:takeCloudSnapshot,before:snapshotBeforeAction,daily:_dailyCloudSnapshot,tick:_dailyCloudSnapshotTick,afterLoad(){_snapAfterLoad=true;},
+    run:runAllocationChecked,restore:_restoreFullBackup,list:snapshotsLoad,data:snapshotData,summary:_snapshotSummary,drops:_snapshotDrops,
+    payload:_fullBackupPayload,nudge:_localBackupNudge,status:()=>_snapStatus,banner:()=>document.getElementById("lex-snapshot-banner"),
+    state:()=>({acts,staff,sa,pupils,dates,allocOverrides,allocDateOverrides,consentMap,attendance,formData,allocRes,venues,notepad:notepadText})};`)(W, O);
+async function v179Tests() {
+  S("v179 — cloud snapshots");
+  const settle = () => new Promise(r => setTimeout(r, 20));
+  const CUR = +((src.match(/CURRENT_VERSION = 'v(\d+)'/) || [])[1]);
+  const T0 = Date.parse("2026-10-05T07:30:00Z"), DAY = 86400000;
+  const page = (srv, extra) => Object.assign({ fetch: srv.fetch, localStorage: mkLS(), now: T0, rows: () => srv.st.rows.length,
+    __LEX_USER__: { email: "admin.one@example.test", name: "Admin One" } }, extra || {});
+  const EMPTY = () => Object.assign(SNAP_FIX(), { acts: [], pupils: [{ email: "only@example.test" }], allocOverrides: {}, consentMap: {}, sa: {}, allocRes: [], notepadText: "" });
+  // ── the counts ──
+  {
+    const A = mkSnapApp(page(mkSnapServer()), { s: SNAP_FIX() }), sm = A.summary(A.payload(false));
+    t("summary: half-term overrides per half", JSON.stringify(sm.ovr) === '{"a1":3,"a2":2}', JSON.stringify(sm.ovr));
+    t("summary: reasons, per-date entries, staff entries", sm.reasons === 3 && sm.dateOvr === 2 && sm.staffEntries === 3);
+    t("summary: pupils, consent, attendance marks (blank marks not counted)", sm.pupils === 4 && sm.consent === 3 && sm.att === 3);
+    t("summary: activities, responses, set lists", sm.acts === 2 && sm.responses === 2 && sm.sets === 2);
+    t("the cloud copy leaves out this browser's local snapshots; the download keeps them", !("snapshots" in A.payload(false)) && A.payload(true).snapshots.length === 1);
+    const d = A.drops({ ovr: { a1: 10, a2: 7 }, reasons: 0, dateOvr: 300, staffEntries: 800, pupils: 410, consent: 26, att: 1500 },
+      { ovr: { a1: 39, a2: 31 }, reasons: 70, dateOvr: 310, staffEntries: 805, pupils: 410, consent: 38, att: 1480 }).join(" | ");
+    t("a 30 Sept-style copy stands out against the one before", d.includes("A1 overrides 39→10") && d.includes("A2 overrides 31→7") && d.includes("reasons 70→0") && d.includes("consent 38→26"), d);
+    t("…and ordinary changes do not", !/per-date|staff entries|pupils|attendance/.test(d));
+  }
+  // ── compress, download, restore ──
+  {
+    const srv = mkSnapServer();
+    const A = mkSnapApp(page(srv), { s: SNAP_FIX() });
+    const r = await A.take("manual", "Taken by hand");
+    const row = srv.st.rows[0] || {};
+    t("a snapshot is stored compressed, with who, device, version and counts", r.ok && srv.st.rows.length === 1 && /^[A-Za-z0-9+/=]+$/.test(row.data)
+      && row.size_bytes > 0 && row.size_bytes < JSON.stringify(A.payload(false)).length && row.created_by === "admin.one@example.test" && row.device === "Chrome on Windows"
+      && row.app_version === "v" + CUR && row.pfx === "lex12" && row.kind === "manual" && row.summary.pupils === 4);
+    const back = await A.data(row.id);
+    const want = A.payload(false); delete want._createdAt; const got = Object.assign({}, back); delete got._createdAt;
+    t("download: the snapshot decompresses to exactly the backup", JSON.stringify(got) === JSON.stringify(want));
+    const B = mkSnapApp(page(srv), { s: EMPTY() });
+    const ok = await B.restore(await B.data(row.id), "cloud snapshot (Taken by hand)");
+    const st = B.state(), F = SNAP_FIX();
+    t("restore: puts every shared collection back", ok === true && JSON.stringify(st.acts) === JSON.stringify(F.acts) && JSON.stringify(st.allocOverrides) === JSON.stringify(F.allocOverrides)
+      && st.pupils.length === 4 && JSON.stringify(st.consentMap) === JSON.stringify(F.consentMap) && JSON.stringify(st.sa) === JSON.stringify(F.sa) && st.notepad === "invented notes");
+    t("…through the confirmed-restore path (the restored keys may overwrite)", ["acts", "pupils", "allocoverrides", "consentmap"].every(k => B.R.forced.includes(k)) && B.R.saved === 1);
+    t("…saying per-date entries and attendance are not written back", /NOT written back yet: per-date entries and attendance marks/.test(B.R.confirms[0] || ""));
+    const pre = srv.st.rows.find(x => x.reason === "Before a restore");
+    t("…after a cloud snapshot of what it replaces", !!pre && pre.summary.pupils === 1 && pre.kind === "action");
+    const C = mkSnapApp(page(srv), { s: EMPTY(), confirm: m => !/FAILED/.test(m) });
+    const data = await C.data(row.id); srv.st.down = true;
+    t("restore: if that snapshot fails and you cancel, nothing changes", (await C.restore(data, "cloud snapshot")) === false && C.state().pupils.length === 1 && C.R.saved === 0
+      && C.R.confirms.some(m => /cloud snapshot before a restore FAILED/.test(m)));
+  }
+  // ── once a day ──
+  {
+    const srv = mkSnapServer(), dailies = () => srv.st.rows.filter(r => r.kind === "daily");
+    const Sv = mkSnapApp(page(srv), { s: SNAP_FIX(), staff: true });
+    await Sv.daily();
+    t("the staff portal takes no snapshot", srv.st.rows.length === 0 && srv.st.gets === 0);
+    const A = mkSnapApp(page(srv), { s: SNAP_FIX() }), B = mkSnapApp(page(srv), { s: SNAP_FIX() });
+    await A.daily();
+    t("the first admin load of the day takes the daily snapshot", dailies().length === 1 && dailies()[0].day === "2026-10-05" && A.status().state === "ok");
+    await B.daily(); await A.daily();
+    t("…once only: another admin, or a reload, finds it", dailies().length === 1 && B.status().state === "ok" && srv.st.posts === 1);
+    srv.st.hideDaily = true;
+    const C = mkSnapApp(page(srv), { s: SNAP_FIX() }); await C.daily();
+    t("…and two admins at the same moment still make one (the database refuses the second)", dailies().length === 1 && C.status().state === "ok" && srv.st.posts === 2);
+    srv.st.hideDaily = false;
+    const W = page(srv), D = mkSnapApp(W, { s: SNAP_FIX() });
+    await D.daily(); D.afterLoad();
+    W.now = T0 + DAY; D.tick(); await settle();
+    t("a tab left open overnight takes the next day's", dailies().length === 2 && dailies().some(r => r.day === "2026-10-06"));
+  }
+  // ── when it fails ──
+  {
+    const srv = mkSnapServer(); srv.st.missing = true;
+    const W = page(srv), A = mkSnapApp(W, { s: SNAP_FIX() });
+    await A.daily(); A.afterLoad();
+    t("not set up: the daily snapshot is reported as failed, saying why", A.status().state === "failed" && /LEX-snapshots\.sql/.test(A.status().error));
+    t("…with the red banner", !!A.banner() && A.banner().textContent.includes("Today's cloud snapshot is missing"));
+    const reqs = srv.st.reqs; W.now += 5 * 60000; A.tick(); await settle();
+    t("…retried every 10 minutes, not on every refresh", srv.st.reqs === reqs && reqs > 0);
+    srv.st.missing = false; W.now += 6 * 60000; A.tick(); await settle();
+    t("…and once it works, the banner goes", A.status().state === "ok" && !A.banner() && srv.st.rows.length === 1);
+  }
+  // ── before an allocation run ──
+  {
+    const srv = mkSnapServer(), W = page(srv), A = mkSnapApp(W, { s: SNAP_FIX() });
+    t("the Run button takes a cloud snapshot first", (await A.run(false)) === true && A.R.engine === 1 && A.R.engineAt[0] === 1 && srv.st.rows[0].reason === "Before an allocation run");
+    srv.st.down = true;
+    const N = mkSnapApp(W, { s: SNAP_FIX(), confirm: () => false });
+    t("…if it fails, it asks, and Cancel does not run", (await N.run(false)) === false && N.R.engine === 0 && /cloud snapshot before an allocation run FAILED/.test(N.R.confirms[0] || ""));
+    const Y = mkSnapApp(W, { s: SNAP_FIX(), confirm: () => true });
+    t("…OK runs without one", (await Y.run(false)) === true && Y.R.engine === 1);
+    srv.st.down = false;
+    const Au = mkSnapApp(W, { s: SNAP_FIX() });
+    await Au.run(true); await Au.run(true);
+    t("an automatic re-run takes one, then at most one per 10 minutes", Au.R.engine === 2 && srv.st.rows.filter(r => r.reason === "Before an automatic allocation re-run").length === 1);
+    W.now += 11 * 60000; srv.st.down = true;
+    t("…and if that fails it is skipped, without asking", (await Au.run(true)) === false && Au.R.engine === 2 && Au.R.confirms.length === 0);
+  }
+  // ── every other bulk change ──
+  {
+    const labels = ['"an activities import"', '"“"+title+"”"', '"a pupil import"', '"a pupil import (full sync)"', '"a venues import"', '"a parent-contacts import"',
+      '"a form-responses import"', '"clearing all form responses"', '"a set-list import"', '"“Archive & Start New Term”"', '"restoring the archived term “"+a.name+"”"',
+      '"clearing all consent"', '"clearing all date overrides"', '"restoring an auto-snapshot"', '"restoring a local snapshot"'];
+    const missing = labels.filter(l => !has("snapshotBeforeAction(" + l + ")"));
+    t("a cloud snapshot before every import, clear-all, restore and Archive & Start New Term", !missing.length, missing.join(", "));
+    // The call, then the change it protects, close behind it.
+    const before = (call, change) => { const a = src.indexOf(call), b = src.indexOf(change, a); return a >= 0 && b > a && b - a < 3000; };
+    t("…taken before anything is changed", before('snapshotBeforeAction("a set-list import")', "blocksCommit(rows)")
+      && before('snapshotBeforeAction("“Archive & Start New Term”")', "acts=[];dates=[];sa={};")
+      && before('snapshotBeforeAction("a restore")', "if(Array.isArray(data.acts))acts=data.acts;")
+      && before("_snapshotBeforeRun(auto)", "  runAllocEngineV12();")
+      && before('snapshotBeforeAction("clearing all consent")', "    consentMap={};"));
+    t("the backup file restore uses the same path", has('      await _restoreFullBackup(data,"backup file"); // v179'));
+    t("the download and the cloud copies are built by one function", has("const payload=_fullBackupPayload(true); // v179"));
+    t("the daily snapshot follows the first cloud load, and the refresh cycle", has('_snapAfterLoad=true;if(syncStatus!=="error")_dailyCloudSnapshot(); // v179') && has("    _dailyCloudSnapshotTick(); // v179"));
+  }
+  // ── retention ──
+  {
+    const srv = mkSnapServer(), W = page(srv), A = mkSnapApp(W, { s: SNAP_FIX() });
+    for (let i = 0; i < 16; i++) { W.now = T0 + i * DAY; await A.take("daily", "Daily"); }
+    for (let i = 0; i < 22; i++) await A.take(i % 2 ? "manual" : "action", "Before x");
+    const k = kind => srv.st.rows.filter(r => (r.kind === "daily") === kind);
+    t("retention: the 14 newest daily snapshots and the 20 newest others", k(true).length === 14 && k(false).length === 20
+      && k(true).map(r => r.day).sort()[0] === "2026-10-07");
+    const L = await A.list(60);
+    t("the list is newest first, without the data", L.rows.length === 34 && L.rows[0].created_at >= L.rows[1].created_at && !("data" in L.rows[0]));
+  }
+  // ── the v178 lock ──
+  {
+    const srv = mkSnapServer(), Lk = mkLock(srv.fetch, { min: CUR, enforce: true });
+    const W = installWrap(mkWin(Lk.fetch, mkLS())); W.now = T0;
+    const A = mkSnapApp(W, { s: SNAP_FIX() });
+    t("a snapshot write carries this copy's version", (await A.take("manual", "x")).ok && Lk.st.seen.some(x => x.tbl === "lex_snapshots" && x.cv === String(CUR)));
+    Lk.st.min = CUR + 1;
+    const r = await A.take("manual", "y");
+    t("…and an out-of-date copy cannot write one", !r.ok && /out of date/.test(r.error) && srv.st.rows.length === 1);
+  }
+  // ── reminders ──
+  {
+    const W = page(mkSnapServer()), A = mkSnapApp(W, { s: SNAP_FIX() });
+    W.localStorage.setItem("lex12-lastbackupdate", new Date(T0 - 3 * DAY).toISOString());
+    t("downloaded 3 days ago: no nudge", A.nudge() === null);
+    W.localStorage.setItem("lex12-lastbackupdate", new Date(T0 - 8 * DAY).toISOString());
+    t("over a week: a nudge to download one", (A.nudge() || {}).textContent === "💾 8 days");
+  }
+  // ── the database side ──
+  const SQLP = require("path").join(require("path").dirname(HTML), "LEX-snapshots.sql");
+  if (!skipIf(!fs.existsSync(SQLP), "no LEX-snapshots.sql beside the app — SQL checks")) {
+    const sql = fs.readFileSync(SQLP, "utf-8");
+    const inst = sql.slice(0, sql.indexOf("(f) SELF-TEST"));
+    t("SQL: the key may insert and read", /create policy "lex_snapshots insert" on public\.lex_snapshots for insert to anon, authenticated with check \(true\);/.test(inst)
+      && /create policy "lex_snapshots read" on public\.lex_snapshots for select to anon, authenticated using \(true\);/.test(inst)
+      && inst.includes("grant select, insert on public.lex_snapshots to anon, authenticated;"));
+    t("SQL: …but not update or delete", inst.includes("revoke update, delete, truncate on public.lex_snapshots from anon, authenticated;")
+      && !/policy[^;]*on public\.lex_snapshots for (update|delete|all)/.test(inst) && !/grant[^;]*(update|delete)[^;]*lex_snapshots/.test(inst));
+    t("SQL: pruning runs in the database as the owner, after each insert",
+      /create or replace function public\.lex_snapshots_prune\(\) returns trigger\s+language plpgsql security definer/.test(inst)
+      && inst.includes("after insert on public.lex_snapshots for each statement execute function public.lex_snapshots_prune()"));
+    t("SQL: …keeping 14 daily and 20 others per system", inst.includes("partition by pfx, (kind = 'daily') order by created_at desc, id")
+      && inst.includes("r.rn > case when r.kind = 'daily' then 14 else 20 end"));
+    t("SQL: one daily per day per system", inst.includes("on public.lex_snapshots (pfx, day) where kind = 'daily'"));
+    t("SQL: the install ends by putting the new table under the v178 lock",
+      inst.split(/\r?\n/).filter(l => l.trim() && !l.trim().startsWith("--")).pop().trim() === "select public.lex_lock_attach_all();");
+    t("SQL: the self-test checks an update and a delete as the key, and undoes itself", sql.includes("execute 'set local role anon';")
+      && sql.includes("exception when insufficient_privilege then r := r || 'ok anon update refused; ';")
+      && sql.includes("exception when insufficient_privilege then r := r || 'ok anon delete refused; ';")
+      && /raise exception 'LEX SNAPSHOTS SELF-TEST — nothing was saved\. %', r;\s*end \$\$;/.test(sql));
+    const calls = [], re = /rest\/v1\/lex_snapshots/g; let m;
+    while ((m = re.exec(src))) calls.push(src.slice(m.index, m.index + 260));
+    t("the app only ever reads or inserts snapshots", calls.length >= 3 && calls.every(c => !/method:"(PATCH|DELETE|PUT)"/.test(c)), String(calls.length));
+  }
+}
+
 // ── summary ──────────────────────────────────────────────────────────────────
 (async () => {
   try { await p0Tests(); }
@@ -2830,6 +3126,8 @@ async function v178Tests() {
   catch (e) { fail++; failures.push("v177 → the tests threw: " + e.message); console.log("  FAIL  the v177 tests threw — " + (e.stack || e)); }
   try { await v178Tests(); }
   catch (e) { fail++; failures.push("v178 → the tests threw: " + e.message); console.log("  FAIL  the v178 tests threw — " + (e.stack || e)); }
+  try { await v179Tests(); }
+  catch (e) { fail++; failures.push("v179 → the tests threw: " + e.message); console.log("  FAIL  the v179 tests threw — " + (e.stack || e)); }
   try { await blockTests(); }
   catch (e) { fail++; failures.push("v171 blocks → the tests threw: " + e.message); console.log("  FAIL  the block tests threw — " + (e.stack || e)); }
   try { blockUseTests(); }
