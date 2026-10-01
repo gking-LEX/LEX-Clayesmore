@@ -1,6 +1,135 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<!-- v178: version lock. Keep this ABOVE the sign-in gate: it must wrap fetch before anything calls it. -->
+<script>
+// v178: database lock against old copies. On 30 Sept a copy of LEX opened before 22 Sept and
+// never reloaded wrote its old data over the cloud: old code has none of the checks added since,
+// so only the database can stop it. Every request to Supabase now carries this copy's version
+// (header x-lex-version), and the database refuses writes from a copy below a minimum while the
+// lock is on (lex_config; LEX-version-lock.sql). This wrapper adds the header to every request
+// (admin, staff and pupil views, the sign-in record), recognises the refusal, stops sending
+// writes from this copy, keeps a list of what was refused on this device, and shows the red
+// banner on every screen. After a reload into a current copy the list is shown, not lost.
+(function(W){
+  'use strict';
+  var V=178;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
+  var JKEY='lex12-blockedwrites',MAXJ=300;
+  var AUDIT=/\/rest\/v1\/(lex_log|lex_signins)(\?|$)/;   // the database records the version, never refuses
+  var NOISE=/-(presence|appversion|synctest)/;           // lex_data keys that are nobody's edits
+  var raw=W.fetch,state={blocked:null,logged:false};
+  function ls(){try{return W.localStorage||null;}catch(_){return null;}}
+  function readJ(){try{var s=ls()&&ls().getItem(JKEY);var j=s?JSON.parse(s):[];return Array.isArray(j)?j:[];}catch(_){return [];}}
+  function writeJ(j){try{var l=ls();if(!l)return false;if(j&&j.length)l.setItem(JKEY,JSON.stringify(j));else l.removeItem(JKEY);return true;}catch(_){return false;}}
+  function urlOf(i){return typeof i==='string'?i:(i&&i.url)||String(i);}
+  function methodOf(i,o){return String((o&&o.method)||(i&&typeof i!=='string'&&i.method)||'GET').toUpperCase();}
+  function isWrite(m){return m==='POST'||m==='PATCH'||m==='PUT'||m==='DELETE';}
+  function tableOf(u){var m=/\/rest\/v1\/([A-Za-z0-9_]+)/.exec(u);return m?m[1]:'?';}
+  function uuid(){try{if(W.crypto&&W.crypto.randomUUID)return W.crypto.randomUUID();}catch(_){}
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){var r=Math.random()*16|0;return (c==='x'?r:(r&3|8)).toString(16);});}
+  function refused(){return new Response(JSON.stringify({code:'P0001',message:'LEX_VERSION_BLOCKED',details:'not sent: this copy (v'+V+') is out of date',hint:'Reload LEX (Ctrl+Shift+R).'}),{status:400,headers:{'Content-Type':'application/json'}});}
+  // One entry per refused edit (a retry of the same edit replaces it). Blob bodies are whole
+  // collections, so only their key is kept: the edits themselves stay in this device's copy.
+  function note(u,m,body){
+    var t=tableOf(u),q=String(u.split('?')[1]||''),key=null,b=null;
+    if(t==='lex_data'){
+      var mk=/(?:^|&)key=eq\.([^&]+)/.exec(q);if(mk){try{key=decodeURIComponent(mk[1]);}catch(_){key=mk[1];}}
+      if(!key&&typeof body==='string'){try{key=(JSON.parse(body)||{}).key||null;}catch(_){}}
+      if(key&&NOISE.test(key))return;
+    }else if(typeof body==='string')b=body.slice(0,2000);
+    var id=t+'|'+m+'|'+(key||q)+'|'+(b||''),j=readJ().filter(function(e){return e&&e.id!==id;});
+    j.push({id:id,at:new Date().toISOString(),v:V,table:t,method:m,key:key,query:q.slice(0,300),body:b});
+    if(j.length>MAXJ)j=j.slice(j.length-MAXJ);
+    if(!writeJ(j)){j.forEach(function(e){if(e.body)e.body=e.body.slice(0,200);});writeJ(j);}
+  }
+  // The shared log is never refused, so a blocked copy still shows up there (once per page).
+  function logBlocked(info){
+    if(state.logged||!info||!info.origin||!info.apikey)return;state.logged=true;
+    try{
+      var u=W.__LEX_USER__||{},dev='';try{dev=(ls()&&ls().getItem('lex12-clientid'))||'';}catch(_){}
+      W.fetch(info.origin+'/rest/v1/lex_log',{method:'POST',keepalive:true,
+        headers:{'apikey':info.apikey,'Authorization':'Bearer '+info.apikey,'Content-Type':'application/json','Prefer':'return=minimal'},
+        body:JSON.stringify({id:uuid(),pfx:'lex12',ts:new Date().toISOString(),action:'SAVE_BLOCKED',
+          detail:('Refused: this copy is v'+V+(info.min!=null?', the minimum is v'+info.min:'')+(info.table?'. First refused: '+info.table:' (found on loading)')+'.').slice(0,2000),
+          user_email:u.email||'',user_name:u.name||'',device_id:dev,device:String((W.navigator&&W.navigator.userAgent)||'').slice(0,120),app_version:'v'+V})
+      }).catch(function(){});
+    }catch(_){}
+  }
+  function btn(d,text,fg,fn){var b=d.createElement('button');b.textContent=text;b.style.cssText='margin:6px 8px 0 0;background:#fff;color:'+fg+';border:none;padding:4px 10px;border-radius:4px;font-weight:600;cursor:pointer;font-size:12px';b.onclick=fn;return b;}
+  function reloadFresh(){try{var u=new URL(W.location.href);u.searchParams.set('_v',String(Date.now()));W.location.replace(u.toString());}catch(_){try{W.location.reload();}catch(__){}}}
+  function banner(){
+    var d=W.document;if(!d)return;
+    if(!d.body){if(!state.waiting){state.waiting=true;d.addEventListener('DOMContentLoaded',function(){state.waiting=false;banner();});}return;}
+    var b=d.getElementById('lex-version-banner');
+    if(!b){b=d.createElement('div');b.id='lex-version-banner';b.setAttribute('role','alert');
+      b.style.cssText='position:sticky;top:0;z-index:10000;background:#b91c1c;color:#fff;padding:10px 16px;font:600 13px/1.5 system-ui,sans-serif';
+      d.body.insertBefore(b,d.body.firstChild);}
+    var s=state.blocked||{};b.textContent='';
+    var t=d.createElement('div');t.textContent="This copy of LEX is out of date and can't save. Reload (Ctrl+Shift+R).";b.appendChild(t);
+    var sub=d.createElement('div');sub.style.cssText='font-weight:400;font-size:12px';
+    sub.textContent='This copy is v'+V+(s.min!=null?'; the minimum is v'+s.min:'')+'. Nothing more is sent from it. Changes made here are kept on this device and listed after you reload.';
+    b.appendChild(sub);b.appendChild(btn(d,'Reload now','#b91c1c',reloadFresh));
+  }
+  function block(info){
+    info=info||{};
+    if(!state.blocked){
+      state.blocked={at:new Date().toISOString(),v:V,min:info.min!=null?info.min:null,why:info.why||'refused'};
+      logBlocked(info);
+      try{if(typeof W.__lexOnVersionBlocked==='function')W.__lexOnVersionBlocked(state.blocked);}catch(_){}
+    }else if(info.min!=null&&state.blocked.min==null)state.blocked.min=info.min;
+    banner();
+  }
+  // After a reload into a copy that can save: what an earlier, refused copy on this device
+  // could not save. Kept until dismissed, so nothing is lost silently.
+  function report(){
+    var j=readJ(),d=W.document;if(!j.length||!d||!d.body||state.blocked)return j.length;
+    if(d.getElementById('lex-blocked-report'))return j.length;
+    var desc=W.__lexDescribeBlocked,b=d.createElement('div');b.id='lex-blocked-report';b.setAttribute('role','alert');
+    b.style.cssText='position:sticky;top:0;z-index:9999;background:#7c2d12;color:#fff;padding:10px 16px;font:13px/1.5 system-ui,sans-serif;max-height:45vh;overflow:auto';
+    var vs={},first=j[0].at;j.forEach(function(e){vs['v'+e.v]=1;if(e.at<first)first=e.at;});
+    var when=first;try{when=new Date(first).toLocaleString([],{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});}catch(_){}
+    var hd=d.createElement('div');hd.style.fontWeight='700';
+    hd.textContent=j.length+' change'+(j.length===1?' was':'s were')+' refused by the database because they came from an out-of-date copy of LEX on this device ('+Object.keys(vs).join(', ')+', from '+when+'):';
+    b.appendChild(hd);
+    var ul=d.createElement('ul');ul.style.cssText='margin:4px 0 0 18px;padding:0';
+    j.slice(0,40).forEach(function(e){var li=d.createElement('li'),s=null;try{s=typeof desc==='function'?desc(e):null;}catch(_){}
+      li.textContent=s||(e.table+' '+e.method+(e.key?' '+e.key:''));ul.appendChild(li);});
+    if(j.length>40){var more=d.createElement('li');more.textContent='… and '+(j.length-40)+' more (in the download)';ul.appendChild(more);}
+    b.appendChild(ul);
+    var nt=d.createElement('div');nt.style.cssText='font-size:12px;margin-top:4px';
+    nt.textContent='Anything not marked "kept on this device" is NOT in the cloud: re-enter it if it is still needed. Download the list to keep a copy.';
+    b.appendChild(nt);
+    b.appendChild(btn(d,'Download the list','#7c2d12',function(){try{var bl=new Blob([JSON.stringify(readJ(),null,2)],{type:'application/json'});
+      var a=d.createElement('a');a.href=URL.createObjectURL(bl);a.download='LEX-refused-changes-'+new Date().toISOString().slice(0,10)+'.json';d.body.appendChild(a);a.click();a.remove();}catch(_){}}));
+    b.appendChild(btn(d,"Dismiss — I've dealt with these",'#7c2d12',function(){writeJ([]);b.remove();}));
+    d.body.insertBefore(b,d.body.firstChild);
+    return j.length;
+  }
+  W.__lexLock={version:V,blocked:function(){return state.blocked;},block:block,report:report,journal:readJ};
+  if(typeof raw!=='function')return;
+  W.fetch=function(input,init){
+    var u=urlOf(input);
+    if(!/\/rest\/v1\//.test(u))return raw.apply(W,arguments);
+    var m=methodOf(input,init),o={},k;
+    if(init)for(k in init)o[k]=init[k];
+    var h=new Headers(o.headers||(input&&typeof input!=='string'&&input.headers)||undefined);
+    h.set('x-lex-version',String(V));o.headers=h;
+    var audit=AUDIT.test(u);
+    if(state.blocked&&isWrite(m)&&!audit){note(u,m,o.body);return Promise.resolve(refused());}   // stop: no retries reach the server
+    return raw.call(W,input,o).then(function(res){
+      if(!res||res.ok||!isWrite(m)||audit||res.status<400||res.status>=500)return res;
+      return res.clone().text().then(function(t){
+        if(/LEX_VERSION_BLOCKED/.test(t)){
+          var mn=/min=([0-9.]+)/.exec(t);
+          note(u,m,o.body);
+          block({min:mn?Number(mn[1]):null,why:'refused',table:tableOf(u),origin:u.split('/rest/v1/')[0],apikey:h.get('apikey')});
+        }
+        return res;
+      },function(){return res;});
+    });
+  };
+})(window);
+</script>
 <!-- ====== LEX SSO GATE v1 — INSERT AS FIRST CHILD OF <head> ====== -->
 <script>
 (function(){
@@ -965,7 +1094,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v177';
+const CURRENT_VERSION = 'v178';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -1944,8 +2073,8 @@ function _logUuid(){
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g,c=>{const r=Math.random()*16|0;return (c==="x"?r:(r&3|8)).toString(16);});
 }
 // "Chrome on Windows" — enough to tell a laptop from a phone; device_id tells two laptops apart.
-function _deviceLabel(){
-  const ua=(typeof navigator!=="undefined"&&navigator.userAgent)||"";
+function _deviceLabel(uaIn){
+  const ua=uaIn||(typeof navigator!=="undefined"&&navigator.userAgent)||"";
   const os=/iPad/.test(ua)?"iPad":/iPhone/.test(ua)?"iPhone":/Android/.test(ua)?"Android":/CrOS/.test(ua)?"Chromebook":
     /Windows/.test(ua)?"Windows":/Macintosh|Mac OS X/.test(ua)?"Mac":/Linux/.test(ua)?"Linux":"unknown device";
   const br=/Edg\//.test(ua)?"Edge":/OPR\//.test(ua)?"Opera":/Firefox\//.test(ua)?"Firefox":/Chrome\//.test(ua)?"Chrome":/Safari\//.test(ua)?"Safari":"a browser";
@@ -1998,7 +2127,7 @@ async function _flushSharedLog(){
 async function sharedLogLoad(kind,limit){
   if(!supaClient)return {error:"No cloud connection."};
   const f={runs:"&action=in.(ALLOCATION_RUN,ALLOCATION_NOT_RUN,SNAPSHOT)",restores:"&action=in.(RESTORE,RESTORE_SAVED,RESTORE_LOST,BACKUP)",
-    overrides:"&action=like.OVERRIDE*",sync:"&action=in.(SYNC_CONFLICT,RESTORE_LOST)"}[kind]||"";
+    overrides:"&action=like.OVERRIDE*",sync:"&action=in.(SYNC_CONFLICT,RESTORE_LOST,SAVE_BLOCKED)"}[kind]||"";
   try{
     const res=await fetch(`${supaClient.url}/rest/v1/lex_log?select=ts,logged_at,action,detail,user_email,user_name,device_id,device,app_version&pfx=eq.${encodeURIComponent(PFX)}${f}&order=ts.desc&limit=${limit||300}`,
       {headers:{"apikey":supaClient.key,"Authorization":"Bearer "+supaClient.key,"Accept":"application/json"}});
@@ -2492,7 +2621,7 @@ function _applyCloudBlob(k,got,seq0){
 // Write one key: conditionally; on a conflict, re-read, re-apply this tab's edits, try again.
 async function _writeBlobKey(k){
   let transient=0,conflicts=0;
-  while(transient<3&&conflicts<4){
+  while(transient<3&&conflicts<4&&!_lexBlocked()){ // v178: refused by the database: stop, keep the edits here
     const v=_stateForKey(k);const fp=JSON.stringify(v);
     const r=_hasStamp(k)?await supaSetIfUnchanged("lex12-"+k,v,_blobStamps[k]):{conflict:true}; // version unknown: read it first
     if(r.ok){
@@ -4090,10 +4219,128 @@ async function _checkAppVersion(){
   }catch(e){ /* non-fatal; never block the app on a version check */ }
 }
 
+// ── v178: database lock against old copies ──────────────────────────────────────────────────
+// The fetch wrapper in the first <script> sends this copy's version with every request; the
+// database refuses writes from a copy below lex_config.min_app_version while lex_config.enforce
+// is on (LEX-version-lock.sql, installed with enforce off). This reads that setting, so a copy
+// already below the minimum shows the red banner at once rather than at its first save (a staff
+// member could otherwise mark a whole register before finding out), and a copy that can save
+// shows the list of changes an earlier, refused copy on this device could not save.
+let _lockCfg=null,_lockCfgAt=0;
+function _lexVerNum(){return parseInt(String(CURRENT_VERSION).replace(/^v/i,""),10)||0;}
+function _lexBlocked(){try{return !!(typeof window!=="undefined"&&window.__lexLock&&window.__lexLock.blocked());}catch(_){return false;}}
+async function _checkVersionGate(force){
+  if(!supaClient)return null;
+  if(!force&&_lockCfg&&Date.now()-_lockCfgAt<300000)return _lockCfg;   // every 5 minutes is plenty
+  _lockCfgAt=Date.now();
+  let cfg;
+  try{
+    const res=await fetch(`${supaClient.url}/rest/v1/lex_config?id=eq.1&select=min_app_version,enforce,updated_at`,
+      {headers:{"apikey":supaClient.key,"Authorization":"Bearer "+supaClient.key,"Accept":"application/json"}});
+    if(!res.ok){const t=await res.text().catch(()=>"");cfg={state:(res.status===404||/42P01|does not exist|schema cache/i.test(t))?"missing":"HTTP "+res.status};}
+    else{const rows=await res.json();const r=Array.isArray(rows)?rows[0]:null;
+      cfg=r?{state:"ok",min:Number(r.min_app_version)||0,enforce:r.enforce===true,at:r.updated_at||""}:{state:"missing"};}
+  }catch(e){cfg={state:"unreachable"};}
+  _lockCfg=cfg;
+  const L=typeof window!=="undefined"?window.__lexLock:null;
+  if(L){
+    if(cfg.state==="ok"&&cfg.enforce&&_lexVerNum()<cfg.min)L.block({min:cfg.min,why:"config",origin:supaClient.url,apikey:supaClient.key});
+    else if(!L.blocked())L.report();
+  }
+  return cfg;
+}
+// Which copies have written in the last 3 days (lex_lock_seen: table, version, browser).
+async function _lockSeenLoad(){
+  if(!supaClient)return null;
+  try{
+    const since=new Date(Date.now()-3*86400000).toISOString();
+    const res=await fetch(`${supaClient.url}/rest/v1/lex_lock_seen?select=tbl,client_version,user_agent,last_seen,n&last_seen=gt.${encodeURIComponent(since)}&order=last_seen.desc&limit=500`,
+      {headers:{"apikey":supaClient.key,"Authorization":"Bearer "+supaClient.key,"Accept":"application/json"}});
+    if(!res.ok)return null;
+    const rows=await res.json();return Array.isArray(rows)?rows:null;
+  }catch(_){return null;}
+}
+function _lockSql(kind,v){
+  v=v==null?_lexVerNum():v;
+  if(kind==="on")return "update public.lex_config set min_app_version = "+v+", enforce = true, updated_at = now() where id = 1;";
+  if(kind==="raise")return "update public.lex_config set min_app_version = "+v+", updated_at = now() where id = 1;";
+  return "update public.lex_config set enforce = false, updated_at = now() where id = 1;";
+}
+// Plain-English status lines for Settings → Cloud Sync. c: green | red | amber | "".
+function _lockStatusLines(cfg,seen,ver,blocked){
+  const L=[];
+  if(!cfg)return [{t:"No cloud connection.",c:"amber"}];
+  if(cfg.state==="missing")L.push({t:"Not installed on the database: every copy can save. To install, run part (a) of LEX-version-lock.sql.",c:"amber"});
+  else if(cfg.state!=="ok")L.push({t:"Could not read the lock settings ("+cfg.state+").",c:"amber"});
+  else if(cfg.enforce)L.push({t:"ON — copies older than v"+cfg.min+" cannot save.",c:"green"});
+  else L.push({t:"OFF — every copy can save"+(cfg.min?" (minimum v"+cfg.min+" is set but not enforced)":"")+".",c:"amber"});
+  L.push(blocked?{t:"This copy: v"+ver+" — BLOCKED. Reload (Ctrl+Shift+R).",c:"red"}:{t:"This copy: v"+ver+" — can save.",c:"green"});
+  if(cfg.state!=="ok")return L;
+  if(!Array.isArray(seen)){L.push({t:"Could not read which copies are writing (lex_lock_seen).",c:"amber"});return L;}
+  if(!seen.length){L.push({t:"No writes recorded in the last 3 days.",c:""});return L;}
+  const bar=cfg.enforce?cfg.min:ver;   // off: who switching on at this copy's version would stop
+  const when=s=>{try{return new Date(s).toLocaleString([],{weekday:"short",day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});}catch(_){return s;}};
+  const byVer={};seen.forEach(r=>{const k=r.client_version||"";(byVer[k]=byVer[k]||[]).push(r);});
+  let oldBrowsers=0;
+  L.push({t:"Copies that wrote in the last 3 days:",c:""});
+  Object.keys(byVer).sort((a,b)=>(parseFloat(b)||0)-(parseFloat(a)||0)).forEach(k=>{
+    const rs=byVer[k],uas=[...new Set(rs.map(r=>r.user_agent||""))],last=rs.reduce((m,r)=>String(r.last_seen||"")>m?String(r.last_seen):m,"");
+    const below=k===""||!(parseFloat(k)>=bar);
+    if(below)oldBrowsers+=uas.length;
+    L.push({t:"• "+(k===""?"no version (a copy older than v178)":"v"+k)+": "+uas.length+" browser"+(uas.length===1?"":"s")+", last write "+when(last)+
+      (below?" — "+uas.slice(0,4).map(u=>_deviceLabel(u||"?")).join(", ")+(uas.length>4?", …":""):""),c:below?"red":""});
+  });
+  L.push(oldBrowsers
+    ?{t:"⚠ "+oldBrowsers+" browser"+(oldBrowsers===1?"":"s")+" wrote with a version below v"+bar+" in the last 3 days."+(cfg.enforce?" They are being refused now.":" Switching on now would block them: wait until they reload."),c:"red"}
+    :{t:"✓ No copy below v"+bar+" has written in the last 3 days.",c:"green"});
+  return L;
+}
+function _lockStatusCard(){
+  const card=h("div",{className:"card card-pad mb-16",id:"lex-lock-card"});
+  card.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"8px"}},"🔒 Lock against old copies"));
+  const body=h("div",{style:{fontSize:"12px",lineHeight:1.6}},"Checking the database…");
+  card.appendChild(body);
+  const col={green:"var(--green)",red:"var(--red)",amber:"var(--amber)"};
+  (async()=>{
+    const cfg=supaClient?await _checkVersionGate(true):null;
+    const seen=cfg&&cfg.state==="ok"?await _lockSeenLoad():null;
+    body.innerHTML="";
+    _lockStatusLines(cfg,seen,_lexVerNum(),_lexBlocked()).forEach(l=>body.appendChild(h("div",{style:{color:col[l.c]||"var(--text2)",fontWeight:(l.c==="red"||l.c==="green")?600:400}},l.t)));
+    const row=h("div",{style:{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"8px"}});
+    [["Copy SQL: switch on at v"+_lexVerNum(),_lockSql("on")],["Copy SQL: raise minimum to v"+_lexVerNum(),_lockSql("raise")],["Copy SQL: switch off",_lockSql("off")]].forEach(([lab,sql])=>
+      row.appendChild(h("button",{className:"btn btn-ghost btn-sm",onClick:()=>{navigator.clipboard.writeText(sql).then(()=>toast("SQL copied — run it in the Supabase SQL editor"));}},lab)));
+    body.appendChild(row);
+    body.appendChild(h("div",{style:{fontSize:"11px",color:"var(--text3)",marginTop:"6px"}},"Install, self-test and uninstall: LEX-version-lock.sql in the repository. Switch on only when no copy below this version has written for a few days."));
+  })();
+  return card;
+}
+// One line per refused change, for the report shown after a reload (see the wrapper).
+function _describeBlockedWrite(e){
+  const TL={lex_attendance:"Register",lex_date_overrides:"Date override",lex_overview:"Overview",lex_sa:"Staff assignments",
+    lex_feedback:"Pupil feedback",lex_block_sets:"LEX THINK set lists",lex_block_members:"LEX THINK set lists"};
+  if(e.table==="lex_data"){const k=String(e.key||"").replace(/^lex12-/,"");
+    return (_BLOB_LABEL[k]||k||"Shared data")+": kept on this device. LEX saves it now if no other device has changed it since; if one has, it is listed under “Some of your changes were not saved”.";}
+  const lab=TL[e.table]||e.table;
+  if(e.method==="DELETE")return lab+": a removal ("+String(e.query||"").slice(0,120)+")";
+  let b=null;try{b=e.body?JSON.parse(e.body):null;}catch(_){b=null;}
+  const rows=Array.isArray(b)?b:b?[b]:[];const r=rows[0]||{};
+  if(!rows.length)return lab+" (details in the download)";
+  const dl=di=>{const d=dates[di];return d?(d.label||d.full||("date "+di)):"date "+di;};
+  if(e.table==="lex_attendance")return "Register: "+(r.act||"?")+", "+dl(r.di)+", "+(r.email||"?")+", session "+(r.sess||"?")+": "+(r.code||"cleared");
+  if(e.table==="lex_date_overrides")return "Date override: "+(r.email||"?")+" on "+dl(r.di)+" → "+(r.activity==="__UNASSIGNED__"?"unassigned":(r.activity||"removed"));
+  if(e.table==="lex_overview")return "Overview: "+(r.datekey||"?");
+  if(e.table==="lex_sa")return "Staff assignments: "+rows.length+" change"+(rows.length===1?"":"s")+" ("+[...new Set(rows.map(x=>x.code).filter(Boolean))].slice(0,6).join(", ")+")";
+  return lab;
+}
+if(typeof window!=="undefined"){
+  window.__lexOnVersionBlocked=function(){try{syncStatus="error";_saveLastError="refused by the database: this copy of LEX is out of date — reload (Ctrl+Shift+R)";updateSyncBadge();}catch(_){}};
+  window.__lexDescribeBlocked=function(e){try{return _describeBlockedWrite(e);}catch(_){return null;}};
+}
+
 // v79 (Phase 0): warn before closing/navigating if there are unsaved changes.
 // _hasPendingSupaWrite is true between a local edit and its confirmed cloud write.
 window.addEventListener("beforeunload", function(e){
-  if(_hasPendingSupaWrite || syncStatus==="error"){
+  if((_hasPendingSupaWrite || syncStatus==="error") && !_lexBlocked()){ // v178: refused copy: edits kept here, reload is the fix
     e.preventDefault();
     e.returnValue = "You have changes that haven't finished saving to the cloud. If you leave now they may be lost.";
     return e.returnValue;
@@ -4181,6 +4428,7 @@ async function initData(){
   }
   try{updateSyncBadge();renderPrefPanel();}catch(e){console.error("initData: badge/pref failed",e&&(e.message||e));}
   try{_updateRestoreBanner();_showBlobConflicts();}catch(_){} // v176: a restore still waiting to go up, or one that was lost
+  if(supaConnected)_checkVersionGate(true); // v178: below the minimum? say so before any edit (it never throws)
 
   // STAGE 2: sync with Supabase in the BACKGROUND (non-blocking).
   // When complete, the data is updated and the current view is re-rendered.
@@ -17703,6 +17951,8 @@ function renderAdminSync(el){
     el.appendChild(healthCard);
   }
 
+  el.appendChild(_lockStatusCard()); // v178
+
   // SQL
   const sql="create table if not exists lex_data (\n  key text primary key,\n  value jsonb not null,\n  updated_at timestamptz default now()\n);\nalter table lex_data enable row level security;\ncreate policy \"public read\" on lex_data for select using (true);\ncreate policy \"public write\" on lex_data for all using (true);";
   el.appendChild(h("div",{className:"card card-pad mb-16"},
@@ -18529,6 +18779,7 @@ async function _runRefreshCycle(){
   try{
     presenceHeartbeat();
     _checkAppVersion(); // v80: lightweight cloud version check each cycle
+    _checkVersionGate(); // v178: the lock's minimum may have been raised (read at most every 5 minutes)
     if(_autosnapDirty)autoSnapshot();
     drainPendingOvrDeletes(); // v66: keep retrying unconfirmed override deletes
 

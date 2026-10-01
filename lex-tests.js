@@ -1282,6 +1282,7 @@ var P0_SRC = [
   grab("function _showBlobConflicts(){", "\r\n}", "_showBlobConflicts"),
   grab("function _applyCloudBlob(k,got,seq0){", "\r\n}", "_applyCloudBlob"),
   grab("async function _writeBlobKey(k){", "\r\n}", "_writeBlobKey"),
+  grab("function _lexBlocked(){", "\r\n", "_lexBlocked"),
   grab("async function _pushDirtyBlobs(){", "\r\n}", "_pushDirtyBlobs"),
   grab("function markBlobsForOverwrite(keys,label){", "\r\n}", "markBlobsForOverwrite"),
   grab("function _saveBlobForce(){", "\r\n}", "_saveBlobForce"),
@@ -1311,6 +1312,7 @@ var mkClient = (server, ls, opts) => new Function("SERVER", "LS", "OPTS", `
   let _lastSyncedFingerprints={},_loadedNonEmpty={},_saveGuardBlocked={},syncStatus="online",lastSyncTime=null,
       _hasPendingSupaWrite=false,_supaDbc=null,_supaWriteInFlight=false,_saveRetryCount=0,_saveLastError=null,_autosnapDirty=false;
   const supaClient={url:"https://db.test",key:"k"};const fetch=SERVER.fetch;const localStorage=LS;
+  const window=OPTS.window;   // v178: the fetch wrapper's state (_lexBlocked); undefined in older tests
   const conflicts=()=>_blobConflictLog;
   function isStaffView(){return !!OPTS.staff;} function isPublicTimetable(){return false;}
   function updateSyncBadge(){} async function saSyncPerRow(){return true;} async function _reconcileIfStale(){}
@@ -2472,7 +2474,7 @@ var LOG_SRC = [
   grab("function logAction(action,detail){", "\r\n}", "logAction"),
   grab("let _logQueue=null;", "let _logTableState=null;", "shared log state"),
   grab("function _logUuid(){", "\r\n}", "_logUuid"),
-  grab("function _deviceLabel(){", "\r\n}", "_deviceLabel"),
+  grab("function _deviceLabel(uaIn){", "\r\n}", "_deviceLabel"),
   grab("function _logQueueSync(){", "\r\n}", "_logQueueSync"),
   grab("function _sharedLog(action,detail,ts){", "\r\n}", "_sharedLog"),
   grab("async function _flushSharedLog(){", "\r\n}", "_flushSharedLog"),
@@ -2561,6 +2563,261 @@ async function v177Tests() {
   t("the Activity Log screen shows the shared log", has("_renderSharedLog(sharedBox); // v177"));
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// v178 — database lock against old copies. The database side (LEX-version-lock.sql) cannot run
+// here, so mkLock does what its trigger does, by the same rule: refuse an API write whose
+// x-lex-version is missing or below lex_config.min_app_version while enforce is on; never refuse
+// lex_log / lex_signins, record the version there instead. The SQL text is checked against that
+// rule further down. Everything on the app side is the shipped code: the fetch wrapper (first
+// <script>) and the functions around it. All names, emails and activities are invented.
+var WRAP_SRC = grab("(function(W){\r\n  'use strict';\r\n  var V=", "})(window);", "v178 fetch wrapper");
+var LOCK_SRC = [
+  grab("const CURRENT_VERSION = '", "';", "CURRENT_VERSION"),
+  grab("const _BLOB_LABEL={", "};", "_BLOB_LABEL"),
+  grab("let _lockCfg=null,_lockCfgAt=0;", "\r\n", "lock state"),
+  grab("function _lexVerNum(){", "\r\n", "_lexVerNum"),
+  grab("function _lexBlocked(){", "\r\n", "_lexBlocked"),
+  grab("async function _checkVersionGate(force){", "\r\n}", "_checkVersionGate"),
+  grab("async function _lockSeenLoad(){", "\r\n}", "_lockSeenLoad"),
+  grab("function _lockSql(kind,v){", "\r\n}", "_lockSql"),
+  grab("function _lockStatusLines(cfg,seen,ver,blocked){", "\r\n}", "_lockStatusLines"),
+  grab("function _describeBlockedWrite(e){", "\r\n}", "_describeBlockedWrite"),
+  grab("function _deviceLabel(uaIn){", "\r\n}", "_deviceLabel"),
+  grab("async function attUpsert(di,act,email,sess,code){", "\r\n}", "attUpsert"),
+  grab("if(typeof window!==\"undefined\"){\r\n  window.__lexOnVersionBlocked", "\r\n}", "v178 hooks")
+].join("\n");
+var LOCK_UA_PHONE = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36";
+// Just enough DOM for the wrapper's banners.
+var mkDom = () => {
+  class El {
+    constructor(t) { this.tagName = String(t).toUpperCase(); this.kids = []; this.style = {}; this.attrs = {}; this._t = ""; this.parent = null; this.id = ""; }
+    get textContent() { return this._t + this.kids.map(k => k.textContent).join(""); }
+    set textContent(v) { this._t = String(v); this.kids.forEach(k => { k.parent = null; }); this.kids = []; }
+    get firstChild() { return this.kids[0] || null; }
+    appendChild(c) { if (c.parent) c.remove(); c.parent = this; this.kids.push(c); return c; }
+    insertBefore(c, ref) { if (c.parent) c.remove(); c.parent = this; const i = this.kids.indexOf(ref); this.kids.splice(i < 0 ? this.kids.length : i, 0, c); return c; }
+    remove() { if (this.parent) { this.parent.kids = this.parent.kids.filter(k => k !== this); this.parent = null; } }
+    setAttribute(k, v) { this.attrs[k] = String(v); }
+    click() { if (this.onclick) this.onclick(); }
+    find(f) { if (f(this)) return this; for (const k of this.kids) { const r = k.find(f); if (r) return r; } return null; }
+    all(f, out) { out = out || []; if (f(this)) out.push(this); this.kids.forEach(k => k.all(f, out)); return out; }
+  }
+  const body = new El("body");
+  return { body, createElement: t => new El(t), getElementById: id => body.find(e => e.id === id), addEventListener() {} };
+};
+var mkWin = (fetchFn, ls) => ({ fetch: fetchFn, localStorage: ls, document: mkDom(), navigator: { userAgent: LOCK_UA_PHONE },
+  location: { href: "https://lex.test/LEX-2026-27.html?view=x#staff", replace(u) { this.replaced = u; }, reload() { this.reloaded = true; } },
+  crypto: require("crypto").webcrypto, __LEX_USER__: { email: "a.teacher@example.test", name: "A Teacher" } });
+// A page load: the shipped wrapper wraps window.fetch.
+var installWrap = W => { new Function("window", WRAP_SRC)(W); return W; };
+// What the database does once LEX-version-lock.sql is installed (see the note above).
+var mkLock = (inner, cfg) => {
+  const st = Object.assign({ installed: true, min: 0, enforce: false, seen: [], refused: 0, log: [], signins: [], sent: 0 }, cfg || {});
+  const verOf = h => { const m = /^\s*v?([0-9]+(\.[0-9]+)?)\s*$/.exec(h == null ? "" : String(h)); return m ? Number(m[1]) : null; };
+  const plain = H => { const o = {}; if (!H) return o; const ent = [];
+    if (typeof H.forEach === "function" && typeof H.get === "function") H.forEach((v, k) => ent.push([k, v])); else Object.entries(H).forEach(e => ent.push(e));
+    ent.forEach(([k, v]) => { o[k] = v; o[k.replace(/(^|-)([a-z])/g, (m, a, c) => a + c.toUpperCase())] = v; }); return o; };
+  const resp = (status, body) => ({ ok: status < 300, status, json: async () => body, text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
+    headers: { get: () => null }, clone() { return this; } });
+  const withClone = r => { if (r && !r.clone) r.clone = () => r; return r; };
+  const fetch = async (url, opts) => {
+    opts = opts || {};
+    const H = opts.headers, hv = H && typeof H.get === "function" ? H.get("x-lex-version") : (H || {})["x-lex-version"];
+    const v = verOf(hv), m = String(opts.method || "GET").toUpperCase(), tbl = (new URL(url).pathname.match(/\/rest\/v1\/(\w+)/) || [])[1];
+    const fwd = Object.assign({}, opts, { headers: plain(H) });
+    if (tbl === "lex_config") return st.installed ? resp(200, [{ min_app_version: st.min, enforce: st.enforce, updated_at: "2026-10-03T08:00:00+00:00" }])
+      : resp(404, '{"code":"42P01","message":"relation \\"public.lex_config\\" does not exist"}');
+    if (tbl === "lex_lock_seen") return resp(200, st.seen.map(r => ({ tbl: r.tbl, client_version: r.cv, user_agent: r.ua, last_seen: "2026-10-02T09:14:00+00:00", n: 1 })));
+    if (m === "GET" || m === "HEAD") return withClone(await inner(url, fwd));
+    st.sent++;
+    const block = st.installed && st.enforce && (v === null || v < st.min);
+    if (st.installed) st.seen.push({ tbl, cv: v === null ? "" : String(v), ua: plain(H)["user-agent"] || "TestAgent" });
+    if (tbl === "lex_log" || tbl === "lex_signins") {
+      [].concat(JSON.parse(opts.body)).forEach(r => (tbl === "lex_log" ? st.log : st.signins).push(Object.assign({}, r, { client_version: v, version_blocked: st.installed ? block : null })));
+      return resp(201, "");
+    }
+    if (block) { st.refused++; return resp(400, { code: "P0001", details: "min=" + st.min + " client=" + (v === null ? "none" : v) + " table=" + tbl,
+      hint: "This copy of LEX is out of date. Reload (Ctrl+Shift+R).", message: "LEX_VERSION_BLOCKED" }); }
+    return withClone(await inner(url, fwd));
+  };
+  return { fetch, st };
+};
+// A per-row table that accepts every write it is given (attendance).
+var mkRows = () => { const rows = []; return { rows, fetch: async (url, o) => { rows.push({ url, body: o && o.body }); return { ok: true, status: 201, text: async () => "", json: async () => [] }; } }; };
+// The staff portal's register save and the lock functions, over a page (W).
+var mkLockApp = (W, role) => new Function("W", "ROLE", `
+  const window=W,localStorage=W.localStorage,document=W.document,navigator=W.navigator;
+  const fetch=(...a)=>W.fetch(...a);
+  const supaClient={url:"https://db.test",key:"k"},PFX="lex12";
+  let syncStatus="online",_saveLastError=null;
+  const dates=[{label:"Sat 26 Sep",half:"A1"},{label:"Sat 3 Oct",half:"A1"}];
+  function lexUserRole(){return ROLE;} function _markSupaWrite(){} function updateSyncBadge(){}
+  const console={error(){},warn(){},log(){}};
+  ${LOCK_SRC}
+  return {att:attUpsert,gate:_checkVersionGate,lines:_lockStatusLines,sql:_lockSql,describe:_describeBlockedWrite,seen:_lockSeenLoad,
+    blocked:_lexBlocked,ver:_lexVerNum,get status(){return syncStatus;},get err(){return _saveLastError;}};`)(W, role || "staff");
+async function v178Tests() {
+  S("v178 — database lock against old copies");
+  const settle = () => new Promise(r => setTimeout(r, 15));
+  const CUR = +((src.match(/CURRENT_VERSION = 'v(\d+)'/) || [])[1]);
+  const MSG = "This copy of LEX is out of date and can't save. Reload (Ctrl+Shift+R).";
+  const banner = W => W.document.getElementById("lex-version-banner");
+  const report = W => W.document.getElementById("lex-blocked-report");
+  const buttonIn = (el, text) => el && el.find(e => e.tagName === "BUTTON" && e.textContent.includes(text));
+  const lsWrites = blob => blob.log.filter(l => !l.startsWith("GET")).length;
+  // ── the wrapper itself ──
+  {
+    const i = src.indexOf(WRAP_SRC), first = src.indexOf("<script"), firstEnd = src.indexOf("</script>");
+    t("the fetch wrapper is in the first <script>, before the sign-in gate and the app", i > first && i < firstEnd && src.indexOf("LEX SSO GATE") > i);
+    t("its version is this file's CURRENT_VERSION", WRAP_SRC.includes("var V=" + CUR + ";"), "v" + CUR);
+    const seen = [], W = installWrap(mkWin(async (u, o) => { seen.push({ u, o }); return { ok: true, status: 200, json: async () => [], text: async () => "" }; }, mkLS()));
+    await W.fetch("https://db.test/rest/v1/lex_data?key=eq.lex12-acts", { headers: { apikey: "k" } });
+    await W.fetch("https://db.test/rest/v1/lex_attendance", { method: "POST", headers: { apikey: "k", Prefer: "resolution=merge-duplicates" }, body: "{}" });
+    await W.fetch("https://fonts.example.test/css", {});
+    t("every request to the database carries the version (reads and writes)", seen[0].o.headers.get("x-lex-version") === String(CUR) && seen[1].o.headers.get("x-lex-version") === String(CUR));
+    t("…keeping the request's own headers", seen[1].o.headers.get("prefer") === "resolution=merge-duplicates" && seen[1].o.headers.get("apikey") === "k");
+    t("…and nothing is added to other sites' requests", !(seen[2].o && seen[2].o.headers && typeof seen[2].o.headers.get === "function"));
+  }
+  // ── a write with no version: what every copy older than v178 sends ──
+  {
+    const blob = mkServer({ acts: [{ id: "a1", n: "Fencing", di: [0] }] }), L = mkLock(blob.fetch, { min: CUR, enforce: true });
+    const old = mkClient({ fetch: L.fetch }, mkLS());       // no wrapper: the request carries no version
+    const ok = await old.rawSet("acts", [{ id: "a1", n: "Fencing (last week's name)", di: [0] }]);
+    t("no version: the database refuses an old copy's whole-collection overwrite (the 30 Sept write)", ok === false && L.st.refused === 1 && blob.get("acts")[0].n === "Fencing");
+    const reg = mkLockApp({ fetch: L.fetch, localStorage: mkLS() });          // a phone with an old copy, no wrapper
+    t("no version: an old copy's register mark is refused too", (await reg.att(1, "Golf", "pupil.one@example.test", "a", "P")) === false && L.st.refused === 2);
+    L.st.enforce = false;
+    t("…and both go through while the lock is off", (await old.rawSet("acts", [{ id: "a1", n: "Fencing B", di: [0] }])) === true && blob.get("acts")[0].n === "Fencing B");
+  }
+  // ── an old version: this copy below the minimum ──
+  {
+    const blob = mkServer({ acts: [{ id: "a1", n: "Fencing", di: [0] }] }), L = mkLock(blob.fetch, { min: CUR + 2, enforce: true }), ls = mkLS();
+    const W = installWrap(mkWin(L.fetch, ls));
+    let hooked = null; W.__lexOnVersionBlocked = b => { hooked = b; };
+    const wrapped = W.fetch; let writeCalls = 0;
+    W.fetch = (u, o) => { if (/lex_data/.test(u) && o && o.method && o.method !== "GET") writeCalls++; return wrapped(u, o); };
+    const C = mkClient({ fetch: (u, o) => W.fetch(u, o) }, ls, { window: W });
+    await C.load();
+    C.acts = [{ id: "a1", n: "Fencing — Year 9", di: [0] }];
+    const r1 = await C.push(); await settle();
+    t("old version: the database refuses the save", r1.failed.includes("acts") && L.st.refused === 1 && blob.get("acts")[0].n === "Fencing");
+    t("…the blob writer stops at once instead of retrying", writeCalls === 1, String(writeCalls));
+    t("…the red banner is on screen", !!banner(W) && banner(W).textContent.includes(MSG));
+    t("…naming this copy's version and the minimum", banner(W).textContent.includes("This copy is v" + CUR + "; the minimum is v" + (CUR + 2)));
+    t("…the app is told (NOT SAVED badge)", !!hooked && hooked.min === CUR + 2);
+    t("…the edit is kept on this device", C.acts[0].n === "Fencing — Year 9");
+    t("…and recorded as refused", W.__lexLock.journal().some(e => e.table === "lex_data" && e.key === "lex12-acts" && e.v === CUR));
+    t("…the shared log still takes the refused copy's entry, with its version", L.st.log.length === 1 && L.st.log[0].action === "SAVE_BLOCKED"
+      && L.st.log[0].client_version === CUR && L.st.log[0].version_blocked === true && L.st.log[0].app_version === "v" + CUR && L.st.log[0].user_email === "a.teacher@example.test");
+    const sentBefore = L.st.sent;
+    C.acts = [{ id: "a1", n: "Fencing — Year 10", di: [0] }];
+    const r2 = await C.push(); await settle();
+    t("…later saves from it are not sent at all", r2.failed.includes("acts") && L.st.sent === sentBefore && L.st.refused === 1);
+    t("…and it still reads", (await (await W.fetch("https://db.test/rest/v1/lex_data?key=eq.lex12-acts&select=value,updated_at&limit=1", { headers: { apikey: "k" } })).json()).length === 1);
+    await W.fetch("https://db.test/rest/v1/lex_signins", { method: "POST", headers: { apikey: "k" }, body: JSON.stringify({ email: "a.teacher@example.test", file: "lex12" }) });
+    t("a sign-in record is never stopped, and carries the version", L.st.signins.length === 1 && L.st.signins[0].client_version === CUR);
+    t("only one shared-log entry per page", L.st.log.length === 1);
+    buttonIn(banner(W), "Reload now").click();
+    t("the banner's Reload fetches a fresh copy and keeps the page's view", /[?&]_v=\d+/.test(W.location.replaced || "") && /view=x/.test(W.location.replaced) && /#staff$/.test(W.location.replaced));
+  }
+  // ── the current version ──
+  {
+    const blob = mkServer({ acts: [{ id: "a1", n: "Fencing", di: [0] }] }), L = mkLock(blob.fetch, { min: CUR, enforce: true }), ls = mkLS();
+    const W = installWrap(mkWin(L.fetch, ls)), C = mkClient({ fetch: (u, o) => W.fetch(u, o) }, ls, { window: W });
+    await C.load(); C.acts = [{ id: "a1", n: "Fencing — Year 9", di: [0] }];
+    const r = await C.push();
+    t("current version: the save goes through", r.wrote === 1 && !r.failed.length && blob.get("acts")[0].n === "Fencing — Year 9" && L.st.refused === 0);
+    t("…the database saw this copy's version", L.st.seen.some(x => x.tbl === "lex_data" && x.cv === String(CUR)));
+    t("…no banner, nothing recorded as refused", !banner(W) && !W.__lexLock.journal().length && !W.__lexLock.blocked());
+  }
+  // ── enforcement off ──
+  {
+    const blob = mkServer({ acts: [{ id: "a1", n: "Fencing", di: [0] }] }), L = mkLock(blob.fetch, { min: CUR + 50, enforce: false }), ls = mkLS();
+    const W = installWrap(mkWin(L.fetch, ls)), C = mkClient({ fetch: (u, o) => W.fetch(u, o) }, ls, { window: W }), A = mkLockApp(W);
+    const cfg = await A.gate(true);
+    await C.load(); C.acts = [{ id: "a1", n: "Fencing — Year 9", di: [0] }];
+    const r = await C.push();
+    t("lock off: a minimum above this copy changes nothing", cfg.state === "ok" && cfg.enforce === false && r.wrote === 1 && blob.get("acts")[0].n === "Fencing — Year 9");
+    t("…no banner on load or on saving", !banner(W) && !W.__lexLock.blocked());
+    L.st.installed = false;
+    const c2 = await A.gate(true);
+    t("lock not installed: reported as missing, and nothing blocks", c2.state === "missing" && !banner(W) && (await A.att(0, "Golf", "pupil.two@example.test", "a", "P")) === true);
+  }
+  // ── the staff portal's register, through a release ──
+  {
+    const rows = mkRows(), L = mkLock(rows.fetch, { min: CUR, enforce: true }), ls = mkLS();
+    const W = installWrap(mkWin(L.fetch, ls)), A = mkLockApp(W, "staff");
+    t("staff register: a mark from the current version is saved", (await A.att(1, "Golf", "pupil.one@example.test", "a", "P")) === true && rows.rows.length === 1
+      && L.st.seen.some(x => x.tbl === "lex_attendance" && x.cv === String(CUR)));
+    L.st.min = CUR + 1;                                     // a later release raised the minimum
+    const ok2 = await A.att(1, "Golf", "pupil.one@example.test", "a", "L"); await settle();
+    t("staff register: after the minimum is raised the mark is refused", ok2 === false && rows.rows.length === 1 && L.st.refused === 1);
+    t("…the phone shows the red banner and NOT SAVED", !!banner(W) && banner(W).textContent.includes(MSG) && A.status === "error" && /out of date/.test(A.err));
+    const sent = L.st.sent;
+    t("…the next mark is not sent", (await A.att(1, "Golf", "pupil.three@example.test", "a", "P")) === false && L.st.sent === sent);
+    t("…both marks are recorded on the phone", W.__lexLock.journal().filter(e => e.table === "lex_attendance").length === 2);
+    t("…the shared log shows the refused copy", L.st.log.some(r => r.action === "SAVE_BLOCKED" && r.version_blocked === true && /lex_attendance/.test(r.detail)));
+    // Reload into the new release (same browser storage).
+    L.st.min = CUR;
+    const W2 = installWrap(Object.assign(mkWin(L.fetch, ls))), A2 = mkLockApp(W2, "staff");
+    await A2.gate(true);
+    const rep = report(W2), text = rep ? rep.textContent : "";
+    t("after reloading: the refused marks are listed, not lost", !!rep && /2 changes were refused/.test(text)
+      && text.includes("Register: Golf, Sat 3 Oct, pupil.one@example.test, session a: L") && text.includes("pupil.three@example.test"));
+    t("…with no red banner (this copy can save)", !banner(W2) && !A2.blocked());
+    t("…and a fresh mark saves", (await A2.att(1, "Golf", "pupil.one@example.test", "a", "L")) === true && rows.rows.length === 2);
+    buttonIn(rep, "Dismiss").click();
+    t("dismissing the list clears it", !report(W2) && !W2.__lexLock.journal().length);
+  }
+  // ── the banner on load ──
+  {
+    const rows = mkRows(), L = mkLock(rows.fetch, { min: CUR + 1, enforce: true }), ls = mkLS();
+    ls.setItem("lex12-blockedwrites", JSON.stringify([{ id: "x", at: "2026-10-03T09:00:00.000Z", v: CUR, table: "lex_attendance", method: "POST", key: null, query: "", body: '{"di":0,"act":"Golf","email":"pupil.two@example.test","sess":"a","code":"P"}' }]));
+    const W = installWrap(mkWin(L.fetch, ls)), A = mkLockApp(W, "admin");
+    await A.gate(true); await settle();
+    t("on load below the minimum: the red banner shows before any edit", !!banner(W) && banner(W).textContent.includes(MSG) && L.st.sent === 1 && rows.rows.length === 0);
+    t("…the shared log records it", L.st.log.length === 1 && /found on loading/.test(L.st.log[0].detail));
+    t("…and the refused-changes list waits until a copy that can save", !report(W) && W.__lexLock.journal().length === 1);
+    W.__lexLock.report();
+    t("…even when asked for directly", !report(W));
+    const blob = mkServer({}), L2 = mkLock(blob.fetch, { min: CUR, enforce: true }), W2 = installWrap(mkWin(L2.fetch, mkLS())), A3 = mkLockApp(W2, "admin");
+    await A3.gate(true);
+    t("a copy that can save, with nothing refused, shows neither", !banner(W2) && !report(W2));
+  }
+  // ── Settings → Cloud Sync status, and the SQL it hands out ──
+  {
+    const A = mkLockApp(installWrap(mkWin(async () => ({ ok: true, json: async () => [], text: async () => "" }), mkLS())));
+    const txt = ls => ls.map(l => l.t).join(" | ");
+    const oldPhone = { client_version: "", user_agent: LOCK_UA_PHONE, last_seen: "2026-10-02T09:14:00+00:00" };
+    const cur = { client_version: String(CUR), user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0 Safari/537.36", last_seen: "2026-10-02T10:00:00+00:00" };
+    const off = txt(A.lines({ state: "ok", min: 0, enforce: false }, [oldPhone, cur], CUR, false));
+    t("status, lock off: says so", /^OFF — every copy can save\./.test(off));
+    t("…and names the old copies still writing", off.includes("no version (a copy older than v178): 1 browser") && off.includes("Chrome on Android") && off.includes("Switching on now would block them"));
+    t("…once they have reloaded, says it is safe", txt(A.lines({ state: "ok", min: 0, enforce: false }, [cur], CUR, false)).includes("✓ No copy below v" + CUR + " has written"));
+    t("status, lock on: shows the minimum", txt(A.lines({ state: "ok", min: CUR, enforce: true }, [cur], CUR, false)).startsWith("ON — copies older than v" + CUR + " cannot save."));
+    t("status, not installed: says so", txt(A.lines({ state: "missing" }, null, CUR, false)).startsWith("Not installed on the database"));
+    t("status: this copy blocked", txt(A.lines({ state: "ok", min: CUR + 1, enforce: true }, [], CUR, true)).includes("This copy: v" + CUR + " — BLOCKED"));
+    const SQLP = require("path").join(require("path").dirname(HTML), "LEX-version-lock.sql");
+    if (!skipIf(!fs.existsSync(SQLP), "no LEX-version-lock.sql beside the app — SQL checks")) {
+      const sql = fs.readFileSync(SQLP, "utf-8");
+      t("the switch-on / raise / switch-off SQL in Cloud Sync is the SQL in the file", sql.includes(A.sql("on", 178)) && sql.includes(A.sql("raise", 179)) && sql.includes(A.sql("off")));
+      t("SQL: installed switched off", /enforce\s+boolean not null default false/.test(sql) && !/insert into public\.lex_config[^;]*true/.test(sql));
+      t("SQL: refuses a missing or lower version, only while on", sql.includes("return cfg.enforce and (v is null or v < cfg.min_app_version);"));
+      t("SQL: reads the same header the app sends", sql.includes("->> 'x-lex-version'") && WRAP_SRC.includes("h.set('x-lex-version'"));
+      t("SQL: one check per request, also when a change matches no rows", sql.includes("before insert or update or delete on public.%I for each statement execute function public.lex_version_gate()"));
+      t("SQL: every lex_ table is locked except the audit tables, which record instead",
+        sql.includes("left(c.relname, 4) = 'lex_'") && sql.includes("c.relname not in ('lex_config', 'lex_lock_seen')") && sql.includes("if t.relname in ('lex_log', 'lex_signins') then"));
+      t("SQL: the anon key can read the settings but not change them", sql.includes('create policy "lex_config read" on public.lex_config for select to anon, authenticated using (true);')
+        && sql.includes("revoke insert, update, delete, truncate on public.lex_config from anon, authenticated;") && !/policy[^;]*on public\.lex_config for (insert|update|delete|all)/.test(sql));
+      t("SQL: the self-test undoes itself", /raise exception 'LEX LOCK SELF-TEST — nothing was saved\. %', r;\s*end \$\$;/.test(sql));
+    }
+  }
+  t("no 'leave site?' prompt on the reload the banner asks for", has('if((_hasPendingSupaWrite || syncStatus==="error") && !_lexBlocked()){'));
+  t("the lock setting is read on load, in every view", has("  if(supaConnected)_checkVersionGate(true); // v178"));
+  t("…and during the refresh cycle", has("    _checkVersionGate(); // v178"));
+  t("Cloud Sync shows the lock's state", has("  el.appendChild(_lockStatusCard()); // v178"));
+}
+
 // ── summary ──────────────────────────────────────────────────────────────────
 (async () => {
   try { await p0Tests(); }
@@ -2571,6 +2828,8 @@ async function v177Tests() {
   catch (e) { fail++; failures.push("v176 → the tests threw: " + e.message); console.log("  FAIL  the v176 tests threw — " + (e.stack || e)); }
   try { await v177Tests(); }
   catch (e) { fail++; failures.push("v177 → the tests threw: " + e.message); console.log("  FAIL  the v177 tests threw — " + (e.stack || e)); }
+  try { await v178Tests(); }
+  catch (e) { fail++; failures.push("v178 → the tests threw: " + e.message); console.log("  FAIL  the v178 tests threw — " + (e.stack || e)); }
   try { await blockTests(); }
   catch (e) { fail++; failures.push("v171 blocks → the tests threw: " + e.message); console.log("  FAIL  the block tests threw — " + (e.stack || e)); }
   try { blockUseTests(); }
