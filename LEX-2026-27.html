@@ -13,7 +13,7 @@
 // banner on every screen. After a reload into a current copy the list is shown, not lost.
 (function(W){
   'use strict';
-  var V=178;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
+  var V=179;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
   var JKEY='lex12-blockedwrites',MAXJ=300;
   var AUDIT=/\/rest\/v1\/(lex_log|lex_signins)(\?|$)/;   // the database records the version, never refuses
   var NOISE=/-(presence|appversion|synctest)/;           // lex_data keys that are nobody's edits
@@ -1094,7 +1094,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v178';
+const CURRENT_VERSION = 'v179';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -2126,7 +2126,7 @@ async function _flushSharedLog(){
 // The newest entries for this year's system. kind: all | runs | restores | overrides | sync.
 async function sharedLogLoad(kind,limit){
   if(!supaClient)return {error:"No cloud connection."};
-  const f={runs:"&action=in.(ALLOCATION_RUN,ALLOCATION_NOT_RUN,SNAPSHOT)",restores:"&action=in.(RESTORE,RESTORE_SAVED,RESTORE_LOST,BACKUP)",
+  const f={runs:"&action=in.(ALLOCATION_RUN,ALLOCATION_NOT_RUN,SNAPSHOT)",restores:"&action=in.(RESTORE,RESTORE_SAVED,RESTORE_LOST,BACKUP,CLOUD_SNAPSHOT,CLOUD_SNAPSHOT_FAILED)",
     overrides:"&action=like.OVERRIDE*",sync:"&action=in.(SYNC_CONFLICT,RESTORE_LOST,SAVE_BLOCKED)"}[kind]||"";
   try{
     const res=await fetch(`${supaClient.url}/rest/v1/lex_log?select=ts,logged_at,action,detail,user_email,user_name,device_id,device,app_version&pfx=eq.${encodeURIComponent(PFX)}${f}&order=ts.desc&limit=${limit||300}`,
@@ -2262,6 +2262,7 @@ async function runAllocationChecked(auto){
       return false;
     }
   }
+  if(!(await _snapshotBeforeRun(auto)))return false; // v179: a cloud restore point of what the run replaces
   runAllocEngineV12();
   return true;
 }
@@ -4337,6 +4338,338 @@ if(typeof window!=="undefined"){
   window.__lexDescribeBlocked=function(e){try{return _describeBlockedWrite(e);}catch(_){return null;}};
 }
 
+// ── v179: cloud snapshots (lex_snapshots) ─────────────────────────────────────────────────────
+// On 30 Sept the newest restore point anyone had was a download from the day before, and each
+// browser's own snapshots were stuck at 8 Sept (local storage full). A full copy of everything —
+// what "Download full backup" saves, less this browser's local snapshots — now goes to the cloud:
+// on the first admin load each day, and immediately before every allocation run, restore, import,
+// set-list import, clear-all and "Archive & Start New Term". The table takes inserts and reads
+// only (LEX-snapshots.sql); the database keeps the 14 newest daily and the 20 newest others.
+let _snapStatus={state:"unknown"};   // today's daily snapshot: unknown | checking | ok | failed
+let _snapTried=0,_snapDailyBusy=false,_snapAfterLoad=false,_snapBannerHidden=false;
+let _snapLastAction=0;               // when this tab last took one before an action (ms)
+function _londonDay(d){
+  try{return new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/London",year:"numeric",month:"2-digit",day:"2-digit"}).format(d||new Date());}
+  catch(_){return (d||new Date()).toISOString().slice(0,10);}
+}
+// What "Download full backup" saves. withLocalSnapshots: this browser's own snapshot history
+// (about 2.5 MB, and only this browser's) — in the download, not in the cloud copies.
+function _fullBackupPayload(withLocalSnapshots){
+  const p={
+    _backupVersion:1,
+    _createdAt:new Date().toISOString(),
+    _appVersion:"v50",
+    _lexVersion:CURRENT_VERSION,
+    acts,staff,sa,pupils,dates,priorYTD,
+    allocOverrides,allocDateOverrides,allocHistory,
+    formData,allocRes,venues,consentMap,
+    savedSubGroups,
+    notepad:notepadText||"",
+    attendance,
+    activityLog:activityLog.slice(-500),
+    blocks:blockBackupPayload() // v174: set lists (sets, leads, rooms, membership)
+  };
+  if(withLocalSnapshots)p.snapshots=(typeof snapshots!=="undefined"&&snapshots)||[];
+  return p;
+}
+// The counts the list shows, so a damaged copy stands out (30 Sept: 10/7 overrides against 39/31).
+function _snapshotSummary(p){
+  const n=o=>o&&typeof o==="object"?Object.keys(o).length:0;
+  const ao=p.allocOverrides||{},ovr={};let reasons=0,att=0;
+  Object.keys(ao).forEach(k=>{if(k.charAt(0)!=="_")ovr[k]=n(ao[k]);});
+  Object.keys(ao._reason||{}).forEach(k=>{reasons+=n(ao._reason[k]);});
+  Object.keys(p.attendance||{}).forEach(k=>{const v=p.attendance[k];
+    if(v&&typeof v==="object")Object.keys(v).forEach(s=>{if(v[s])att++;});else if(v)att++;});
+  return {ovr,reasons,dateOvr:n(p.allocDateOverrides),staffEntries:n(p.sa),pupils:(p.pupils||[]).length,consent:n(p.consentMap),att,
+    acts:(p.acts||[]).length,staff:(p.staff||[]).length,responses:(p.formData||[]).length,
+    sets:p.blocks&&Array.isArray(p.blocks.sets)?p.blocks.sets.length:0};
+}
+function _snapshotCountsText(s){
+  if(!s)return "";
+  const hv=Object.keys(s.ovr||{}).sort();
+  return "Overrides "+(hv.length?hv.map(k=>k.toUpperCase()+" "+s.ovr[k]).join(" / "):"none")+" · reasons "+s.reasons+" · per-date "+s.dateOvr+
+    " · staff entries "+s.staffEntries+" · pupils "+s.pupils+" · consent "+s.consent+" · attendance marks "+s.att;
+}
+// What fell by more than 30% against the snapshot before (from at least 10).
+function _snapshotDrops(newer,older){
+  if(!newer||!older)return [];
+  const out=[],chk=(lab,a,b)=>{a=a||0;b=b||0;if(b>=10&&a<b*0.7)out.push(lab+" "+b+"→"+a);};
+  [...new Set(Object.keys(older.ovr||{}).concat(Object.keys(newer.ovr||{})))].sort().forEach(k=>chk(k.toUpperCase()+" overrides",(newer.ovr||{})[k],(older.ovr||{})[k]));
+  chk("reasons",newer.reasons,older.reasons);chk("per-date",newer.dateOvr,older.dateOvr);chk("staff entries",newer.staffEntries,older.staffEntries);
+  chk("pupils",newer.pupils,older.pupils);chk("consent",newer.consent,older.consent);chk("attendance marks",newer.att,older.att);
+  return out;
+}
+async function _gzipB64(str){
+  const u8=new Uint8Array(await new Response(new Blob([str]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
+  let s="";for(let i=0;i<u8.length;i+=0x8000)s+=String.fromCharCode.apply(null,u8.subarray(i,i+0x8000));
+  return {b64:btoa(s),bytes:u8.length};
+}
+async function _gunzipB64(b64){
+  const s=atob(b64),u8=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u8[i]=s.charCodeAt(i);
+  return await new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+}
+function _snapHeaders(extra){return Object.assign({"apikey":supaClient.key,"Authorization":"Bearer "+supaClient.key},extra||{});}
+function _snapError(status,t){
+  return (status===404||/42P01|does not exist|schema cache/i.test(t||""))?"cloud snapshots are not set up yet (LEX-snapshots.sql)":
+    /LEX_VERSION_BLOCKED/.test(t||"")?"this copy of LEX is out of date — reload":"HTTP "+status+(t?" "+String(t).slice(0,120):"");
+}
+// One snapshot of what this tab holds now. kind: daily | action | manual. {ok,id} | {ok:false,error}.
+async function takeCloudSnapshot(kind,reason){
+  if(!supaClient)return {ok:false,error:"no cloud connection"};
+  if(_lexBlocked())return {ok:false,error:"this copy of LEX is out of date — reload"};
+  try{
+    try{await blocksLoad();}catch(_){}   // the latest set lists, as the download does
+    const payload=_fullBackupPayload(false);
+    const summary=_snapshotSummary(payload);
+    const z=await _gzipB64(JSON.stringify(payload));
+    const u=(typeof window!=="undefined"&&window.__LEX_USER__)||{};
+    const row={id:_logUuid(),pfx:PFX,kind,day:_londonDay(),created_by:u.email||"",device:_deviceLabel(),app_version:CURRENT_VERSION,
+      reason:String(reason||"").slice(0,200),summary,size_bytes:z.bytes,data:z.b64};
+    const res=await fetch(`${supaClient.url}/rest/v1/lex_snapshots`,{method:"POST",
+      headers:_snapHeaders({"Content-Type":"application/json","Prefer":"return=minimal"}),body:JSON.stringify(row)});
+    if(!res.ok){
+      const t=await res.text().catch(()=>"");
+      if(kind==="daily"&&(res.status===409||/23505/.test(t)))return {ok:true,already:true}; // another admin took today's first
+      const error=_snapError(res.status,t);
+      try{logAction("CLOUD_SNAPSHOT_FAILED",reason+": "+error);}catch(_){}
+      return {ok:false,error};
+    }
+    try{logAction("CLOUD_SNAPSHOT",reason+" ("+Math.round(z.bytes/1024)+" KB). "+_snapshotCountsText(summary));}catch(_){}
+    return {ok:true,id:row.id,summary};
+  }catch(e){
+    const error=(e&&(e.message||String(e)))||"unknown error";
+    try{logAction("CLOUD_SNAPSHOT_FAILED",reason+": "+error);}catch(_){}
+    return {ok:false,error};
+  }
+}
+// Before anything that replaces data in bulk. If the snapshot fails, the person decides.
+async function snapshotBeforeAction(what){
+  if(!supaClient||isStaffView()||isPublicTimetable())return true;
+  const r=await takeCloudSnapshot("action","Before "+what);
+  if(r.ok){_snapLastAction=Date.now();return true;}
+  return confirm("⚠ The cloud snapshot before "+what+" FAILED: "+r.error+".\n\nThere will be no cloud restore point from just before this change.\n\nOK: continue anyway.\nCancel: stop (nothing has been changed).");
+}
+// An allocation run. A silent re-run follows every override change; a snapshot each time would
+// push the restore points before restores and imports out of the 20 kept within the hour, so a
+// silent re-run takes one only if this tab has none from the last 10 minutes — and if that
+// fails it is skipped (there is nobody to ask). The Run button always takes one.
+async function _snapshotBeforeRun(auto){
+  if(!auto)return snapshotBeforeAction("an allocation run");
+  if(!supaClient||Date.now()-_snapLastAction<600000)return true;
+  const r=await takeCloudSnapshot("action","Before an automatic allocation re-run");
+  if(r.ok){_snapLastAction=Date.now();return true;}
+  toast("Allocation not re-run: the cloud snapshot before it failed ("+r.error+")","err");
+  return false;
+}
+// The first admin load of the day takes the day's snapshot, unless one exists (any admin, any device).
+async function _dailyCloudSnapshot(){
+  if(!supaClient||isStaffView()||isPublicTimetable()||_snapDailyBusy)return _snapStatus;
+  const day=_londonDay();
+  _snapDailyBusy=true;_snapTried=Date.now();
+  if(_snapStatus.state!=="ok"||_snapStatus.day!==day){_snapStatus={state:"checking",day};_updateSnapshotBanner();}
+  try{
+    const res=await fetch(`${supaClient.url}/rest/v1/lex_snapshots?pfx=eq.${PFX}&kind=eq.daily&day=eq.${day}&select=id,created_at,created_by&limit=1`,
+      {headers:_snapHeaders({"Accept":"application/json"})});
+    if(!res.ok){const t=await res.text().catch(()=>"");_snapStatus={state:"failed",day,error:_snapError(res.status,t)};return _snapStatus;}
+    const rows=await res.json();
+    if(Array.isArray(rows)&&rows.length){_snapStatus={state:"ok",day,at:rows[0].created_at,by:rows[0].created_by};return _snapStatus;}
+    const r=await takeCloudSnapshot("daily","Daily: first admin load of the day");
+    _snapStatus=r.ok?{state:"ok",day,at:new Date().toISOString(),by:r.already?"another admin":"this device"}:{state:"failed",day,error:r.error};
+    return _snapStatus;
+  }catch(e){_snapStatus={state:"failed",day,error:"could not reach the cloud"};return _snapStatus;}
+  finally{_snapDailyBusy=false;_updateSnapshotBanner();}
+}
+// From the refresh cycle: a tab left open overnight takes the new day's; a failed one is retried
+// every 10 minutes.
+function _dailyCloudSnapshotTick(){
+  if(!_snapAfterLoad)return;
+  const today=_londonDay(),s=_snapStatus;
+  if(s.state==="ok"&&s.day===today)return;
+  if(s.day===today&&Date.now()-_snapTried<600000)return;
+  _dailyCloudSnapshot();
+}
+// Today's snapshot missing or failed: a red banner on every admin screen.
+function _updateSnapshotBanner(){
+  if(typeof document==="undefined"||!document.body)return;
+  const badge=document.getElementById("snap-badge");if(badge)_paintSnapBadge(badge);
+  let b=document.getElementById("lex-snapshot-banner");
+  if(isStaffView()||isPublicTimetable()||_snapStatus.state!=="failed"||_snapBannerHidden){if(b)b.remove();return;}
+  if(!b){b=h("div",{id:"lex-snapshot-banner",style:{position:"sticky",top:"0",zIndex:"9997",background:"#b91c1c",color:"#fff",padding:"10px 16px",fontSize:"12px",lineHeight:"1.5"}});
+    document.body.insertBefore(b,document.body.firstChild);}
+  const bs={marginTop:"6px",marginRight:"8px",background:"#fff",color:"#b91c1c",border:"none",padding:"4px 10px",borderRadius:"4px",fontWeight:"600",cursor:"pointer",fontSize:"12px"};
+  b.innerHTML="";
+  b.appendChild(h("div",{style:{fontWeight:"700"}},"⚠ Today's cloud snapshot is missing: "+(_snapStatus.error||"it failed")));
+  b.appendChild(h("div",null,"There is no cloud restore point for today. LEX tries again every 10 minutes; you can try now, or download a full backup (Settings → Cloud Sync)."));
+  b.appendChild(h("div",null,
+    h("button",{style:bs,onClick:async()=>{const s=await _dailyCloudSnapshot();toast(s.state==="ok"?"Today's cloud snapshot saved ✓":"Still failing: "+(s.error||""),s.state==="ok"?"":"err");}},"Take today's snapshot now"),
+    h("button",{style:bs,onClick:()=>{_snapBannerHidden=true;_updateSnapshotBanner();}},"Hide until reload")));
+}
+function _paintSnapBadge(b){
+  const s=_snapStatus,ok=s.state==="ok",bad=s.state==="failed";
+  let t="";try{t=s.at?new Date(s.at).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"";}catch(_){}
+  b.textContent=ok?"☁ snapshot ✓":bad?"☁ no snapshot today":"☁ snapshot …";
+  b.style.background=ok?"rgba(34,197,94,.1)":bad?"#b91c1c":"transparent";
+  b.style.color=ok?"var(--green)":bad?"#fff":"var(--text3)";
+  b.style.borderColor=ok?"var(--green)":bad?"#b91c1c":"var(--border2)";
+  b.title=ok?"Today's cloud snapshot: "+t+(s.by?", "+s.by:"")+". Click for the list.":bad?"Today's cloud snapshot failed: "+(s.error||"")+". Click for the list.":"Checking today's cloud snapshot…";
+}
+function _goToSyncCard(id){
+  adminSub="sync";currentTab="admin";render();
+  setTimeout(()=>{const c=document.getElementById(id);if(c){c.scrollIntoView({behavior:"smooth",block:"center"});c.style.outline="2px solid var(--accent)";setTimeout(()=>{c.style.outline="";},2000);}},100);
+}
+function _snapBadge(){
+  const b=h("button",{id:"snap-badge",style:{fontSize:"10px",padding:"3px 8px",border:"1px solid var(--border2)",borderRadius:"4px",whiteSpace:"nowrap",cursor:"pointer",marginLeft:"4px",fontFamily:"inherit",fontWeight:"600"},
+    onClick:()=>_goToSyncCard("lex-snapshots-card")});
+  _paintSnapBadge(b);return b;
+}
+// A downloaded copy, kept off the cloud: a weekly nudge (the cloud takes a copy every day).
+function _localBackupNudge(){
+  let lastIso=null;try{lastIso=localStorage.getItem("lex12-lastbackupdate");}catch(_){}
+  const days=lastIso?Math.floor((Date.now()-new Date(lastIso).getTime())/86400000):null;
+  if(days!==null&&days<7)return null;
+  return h("button",{style:{fontSize:"10px",padding:"3px 8px",border:"1px solid #f59e0b",background:"#fef3c7",color:"#92400e",borderRadius:"4px",whiteSpace:"nowrap",cursor:"pointer",marginLeft:"4px",fontFamily:"inherit",fontWeight:"600"},
+    title:(lastIso?"Last full backup downloaded on this device "+days+" days ago.":"No full backup downloaded on this device.")+" The cloud keeps a copy every day; once a week, also download one to keep a copy outside it.",
+    onClick:()=>_goToSyncCard("lex-backup-card")},"💾 "+(lastIso?days+" days":"no download"));
+}
+async function snapshotsLoad(limit){
+  if(!supaClient)return {error:"No cloud connection."};
+  try{
+    const res=await fetch(`${supaClient.url}/rest/v1/lex_snapshots?pfx=eq.${PFX}&select=id,kind,day,created_at,created_by,device,app_version,reason,summary,size_bytes&order=created_at.desc&limit=${limit||60}`,
+      {headers:_snapHeaders({"Accept":"application/json"})});
+    if(!res.ok){const t=await res.text().catch(()=>"");return {error:_snapError(res.status,t)};}
+    const rows=await res.json();return Array.isArray(rows)?{rows}:{error:"unexpected reply"};
+  }catch(_){return {error:"could not reach the cloud"};}
+}
+// The backup a snapshot holds, as the object "Download full backup" saves.
+async function snapshotData(id){
+  const res=await fetch(`${supaClient.url}/rest/v1/lex_snapshots?id=eq.${encodeURIComponent(id)}&select=data&limit=1`,{headers:_snapHeaders({"Accept":"application/json"})});
+  if(!res.ok){const t=await res.text().catch(()=>"");throw new Error(_snapError(res.status,t));}
+  const rows=await res.json();
+  if(!Array.isArray(rows)||!rows[0])throw new Error("this snapshot is no longer there (older ones are removed automatically)");
+  return JSON.parse(await _gunzipB64(rows[0].data));
+}
+function _snapWhen(iso){try{return new Date(iso).toLocaleString("en-GB",{weekday:"short",day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});}catch(_){return iso;}}
+function _snapshotsCard(){
+  const card=h("div",{className:"card card-pad mb-16",id:"lex-snapshots-card"});
+  card.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"4px"}},"☁ Cloud snapshots"));
+  card.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text2)",lineHeight:1.6,marginBottom:"8px"}},
+    "A full copy of everything (what “Download full backup” saves), kept in the cloud: one a day on the first admin load (the last 14 are kept), and one just before every allocation run, restore, import, set-list import, clear-all and “Archive & Start New Term” (the last 20 are kept). A big fall against the copy before it is marked in red."));
+  const status=h("span",{style:{fontSize:"12px",color:"var(--text2)"}});
+  const list=h("div",{style:{fontSize:"12px"}},"Loading…");
+  const take=h("button",{className:"btn btn-primary btn-sm",onClick:async()=>{
+    take.disabled=true;take.textContent="Taking snapshot…";
+    const r=await takeCloudSnapshot("manual","Taken by hand");
+    take.disabled=false;take.textContent="Take snapshot now";
+    if(r.ok){toast("Cloud snapshot saved ✓");fill();}else toast("Cloud snapshot failed: "+r.error,"err");
+  }},"Take snapshot now");
+  card.appendChild(h("div",{style:{display:"flex",gap:"10px",alignItems:"center",flexWrap:"wrap",marginBottom:"8px"}},take,status));
+  card.appendChild(h("div",{style:{fontSize:"12px",padding:"8px 10px",background:"var(--amber-soft)",border:"1px solid var(--amber)",borderRadius:"4px",marginBottom:"10px",lineHeight:1.5}},
+    h("strong",null,"Restore puts back the shared data only. "),
+    "It does NOT yet write back per-date entries or attendance marks: those stay as they are now in the cloud. Download the snapshot as well if you need them."));
+  card.appendChild(list);
+  const dlStyle={marginLeft:"4px"};
+  async function fill(){
+    const s=_snapStatus;
+    status.textContent=s.state==="ok"?"Today's daily snapshot: "+_snapWhen(s.at)+(s.by?" ("+s.by+")":""):s.state==="failed"?"Today's daily snapshot FAILED: "+(s.error||""):"Today's daily snapshot: checking…";
+    status.style.color=s.state==="failed"?"var(--red)":"var(--text2)";
+    const got=await snapshotsLoad(60);
+    list.innerHTML="";
+    if(got.error){list.appendChild(h("div",{style:{color:"var(--red)"}},"Could not list the snapshots: "+got.error));return;}
+    if(!got.rows.length){list.appendChild(h("div",{style:{color:"var(--text3)"}},"No cloud snapshots yet."));return;}
+    got.rows.forEach((r,i)=>{
+      const drops=_snapshotDrops(r.summary,(got.rows[i+1]||{}).summary);
+      const when=_snapWhen(r.created_at);
+      const dl=h("button",{className:"btn btn-ghost btn-xs",style:dlStyle,onClick:async()=>{
+        try{
+          const data=await snapshotData(r.id);
+          const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+          const a=h("a",{href:URL.createObjectURL(blob),download:"LEX_"+SYSTEM_YEAR_LABEL+"_full_backup_"+r.day+"_cloud-"+String(r.created_at||"").slice(11,16).replace(":","")+".json"});
+          document.body.appendChild(a);a.click();a.remove();
+          try{localStorage.setItem("lex12-lastbackupdate",new Date().toISOString());}catch(_){}
+          logAction("BACKUP","Cloud snapshot of "+when+" downloaded");toast("Downloaded ✓");
+        }catch(e){toast("Download failed: "+(e.message||e),"err");}
+      }},"⬇ Download");
+      const rs=h("button",{className:"btn btn-ghost btn-xs",style:dlStyle,onClick:async()=>{
+        try{
+          const data=await snapshotData(r.id);
+          if(await _restoreFullBackup(data,"cloud snapshot ("+(r.reason||r.kind)+")"))fill();
+        }catch(e){console.error("Restore from cloud snapshot failed",e);toast("Restore failed: "+(e.message||e),"err");}
+      }},"↩ Restore…");
+      list.appendChild(h("div",{style:{padding:"8px 0",borderBottom:"1px solid var(--border)"}},
+        h("div",{style:{display:"flex",justifyContent:"space-between",gap:"8px",flexWrap:"wrap"}},
+          h("div",null,h("strong",null,when),"  ·  "+(r.reason||r.kind)+"  ·  "+(r.created_by||"?")+"  ·  "+(r.device||"?")+"  ·  "+(r.app_version||"")+"  ·  "+Math.round((r.size_bytes||0)/1024)+" KB"),
+          h("div",null,dl,rs)),
+        h("div",{style:{color:"var(--text2)"}},_snapshotCountsText(r.summary)),
+        drops.length?h("div",{style:{color:"var(--red)",fontWeight:600}},"⚠ Fell against the snapshot before: "+drops.join(", ")):null));
+    });
+  }
+  fill();
+  return card;
+}
+
+// v179: the confirmed restore (v169/v176), shared by "Restore from backup file" and the cloud
+// snapshots. label: where the backup came from. false if not restored (cancelled).
+async function _restoreFullBackup(data,label){
+  // Summary of what we're about to import
+  const summary=[
+    "Pupils: "+(Array.isArray(data.pupils)?data.pupils.length:0),
+    "Staff: "+(Array.isArray(data.staff)?data.staff.length:0),
+    "Activities: "+(Array.isArray(data.acts)?data.acts.length:0),
+    "Dates: "+(Array.isArray(data.dates)?data.dates.length:0),
+    "Alloc results: "+(Array.isArray(data.allocRes)?data.allocRes.length:0),
+    "Form responses: "+(Array.isArray(data.formData)?data.formData.length:0),
+    "LEX THINK set lists: "+(data.blocks&&Array.isArray(data.blocks.sets)&&data.blocks.sets.length?data.blocks.sets.length+" sets and groups":"none in this backup — the current ones are kept")
+  ];
+  const when=data._createdAt?new Date(data._createdAt).toLocaleString():"unknown date";
+  if(!confirm("⚠️ RESTORE FROM BACKUP — overwrites ALL current data.\n\nFrom: "+(label||"backup file")+", "+when+"\n\n"+summary.join("\n")+"\n\nNOT written back yet: per-date entries and attendance marks. Those stay as they are now in the cloud.\n\nA cloud snapshot of the current data is taken first, so this can be undone.\n\nProceed?")){
+    return false;
+  }
+  // Save current state as a snapshot before overwriting, if the helper exists
+  try{if(typeof takeSnapshot==="function")takeSnapshot("Pre-restore (before JSON backup import)");}catch(_){}
+  // v179: and a cloud restore point of everything as it is now.
+  if(!(await snapshotBeforeAction("a restore")))return false;
+  // Apply each field only if present — allows partial backups
+  if(Array.isArray(data.acts))acts=data.acts;
+  if(Array.isArray(data.staff))staff=data.staff;
+  if(data.sa&&typeof data.sa==="object")sa=data.sa;
+  if(Array.isArray(data.pupils))pupils=data.pupils;
+  if(Array.isArray(data.dates))dates=data.dates;
+  if(data.priorYTD&&typeof data.priorYTD==="object")priorYTD=data.priorYTD;
+  if(data.allocOverrides&&typeof data.allocOverrides==="object")allocOverrides=data.allocOverrides;
+  if(data.allocDateOverrides&&typeof data.allocDateOverrides==="object")allocDateOverrides=data.allocDateOverrides;
+  if(Array.isArray(data.allocHistory))allocHistory=data.allocHistory;
+  if(Array.isArray(data.formData))formData=data.formData;
+  if(Array.isArray(data.allocRes)||data.allocRes===null)allocRes=data.allocRes;
+  if(Array.isArray(data.venues))venues=data.venues;
+  if(data.consentMap&&typeof data.consentMap==="object")consentMap=data.consentMap;
+  if(Array.isArray(data.savedSubGroups))savedSubGroups=data.savedSubGroups;
+  if(typeof data.notepad==="string")notepadText=data.notepad;
+  if(data.attendance&&typeof data.attendance==="object")attendance=data.attendance;
+  if(Array.isArray(data.activityLog))activityLog=data.activityLog;
+  // v169: a confirmed restore replaces newer versions on purpose. v176: only the keys it restored.
+  markBlobsForOverwrite([["acts",Array.isArray(data.acts)],["staff",Array.isArray(data.staff)],["pupils",Array.isArray(data.pupils)],["dates",Array.isArray(data.dates)],
+    ["priorytd",!!(data.priorYTD&&typeof data.priorYTD==="object")],["allocoverrides",!!(data.allocOverrides&&typeof data.allocOverrides==="object")],
+    ["allochistory",Array.isArray(data.allocHistory)],["formdata",Array.isArray(data.formData)],["allocres",Array.isArray(data.allocRes)||data.allocRes===null],
+    ["venues",Array.isArray(data.venues)],["consentmap",!!(data.consentMap&&typeof data.consentMap==="object")],["subgroups",Array.isArray(data.savedSubGroups)],
+    ["notepad",typeof data.notepad==="string"]].filter(x=>x[1]).map(x=>x[0]),(label||"backup file")+" from "+when);
+  saveAll();
+  // v174: set lists — written back as a new import; a backup without them keeps the current ones.
+  const _br=blockRestoreRows(data.blocks,new Date().toISOString());
+  let _brNote=" (set lists kept as they were)";
+  if(_br&&!supaClient){_brNote=" (set lists NOT restored: no cloud connection)";toast("Set lists NOT restored — no cloud connection. Restore again once connected.","err");}
+  else if(_br){
+    try{await blocksCommit(_br);await blocksLoad();_brNote=" (with "+_br.sets.length+" set-list rows)";}
+    catch(e2){console.error("Restoring set lists failed",e2);_brNote=" (set lists NOT restored: "+(e2.message||e2)+")";
+      toast("Set lists NOT restored — "+(e2.message||e2)+". Re-import them in Settings → Blocks.","err");}
+  }
+  logAction("RESTORE","Full-state JSON restored from "+(label||"backup file")+" of "+(data._createdAt||"unknown date")+_brNote);
+  toast("Restored ✓ — reloading UI");
+  // Force a full re-render
+  const main=document.querySelector(".main");if(main){main.innerHTML="";render();}
+  else render();
+  return true;
+}
+
 // v79 (Phase 0): warn before closing/navigating if there are unsaved changes.
 // _hasPendingSupaWrite is true between a local edit and its confirmed cloud write.
 window.addEventListener("beforeunload", function(e){
@@ -4438,6 +4771,7 @@ async function initData(){
     loadFromSupabase().then(()=>{
       if(syncStatus!=="error"){syncStatus="online";lastSyncTime=new Date();}
       updateSyncBadge();
+      _snapAfterLoad=true;if(syncStatus!=="error")_dailyCloudSnapshot(); // v179: the day's first admin load
       // Re-render to show fresh data, but only if user hasn't been actively editing
       const userIdleMs=Date.now()-_lastUserActivity;
       // v125: always re-render if the Overview is showing — its data lives only in the
@@ -5307,40 +5641,8 @@ function renderTopbar(){
       h("a",{href:"?view=timetable",target:"_blank",style:{fontSize:"11px",color:"var(--purple)",textDecoration:"none",padding:"4px 8px",border:"1px solid var(--purple)",borderRadius:"4px",whiteSpace:"nowrap"}},"Pupil view ↗"),
       h("a",{href:"#staff",style:{fontSize:"11px",color:"var(--accent)",textDecoration:"none",padding:"4px 8px",border:"1px solid var(--accent)",borderRadius:"4px",whiteSpace:"nowrap"}},"Staff view ↗"),
       window.__LEX_USER__?h("span",{style:{fontSize:"10px",color:"var(--text3)",whiteSpace:"nowrap",marginLeft:"4px"},title:window.__LEX_USER__.email+" — close the tab to sign out"},_lexUserAcro()||window.__LEX_USER__.email):null,
-      (function(){
-        // v78: backup-age indicator. Click to scroll to the backup card.
-        try{
-          const lastIso = localStorage.getItem("lex12-lastbackupdate");
-          let days = lastIso ? Math.floor((Date.now() - new Date(lastIso).getTime())/86400000) : 999;
-          let col = "var(--green)", bg = "rgba(34,197,94,.1)", border = "var(--green)";
-          if(days >= 14){ col="#fff"; bg="#b91c1c"; border="#b91c1c"; }
-          else if(days >= 7){ col="#92400e"; bg="#fef3c7"; border="#f59e0b"; }
-          const label = lastIso ? ("💾 " + (days===0 ? "today" : days===1 ? "1 day" : days+" days")) : "💾 no backup";
-          const title = lastIso
-            ? "Last full backup: "+days+" day"+(days===1?"":"s")+" ago. Click to download a new one."
-            : "No backup recorded. Click to download one now.";
-          return h("button",{
-            style:{fontSize:"10px",padding:"3px 8px",border:"1px solid "+border,background:bg,color:col,borderRadius:"4px",whiteSpace:"nowrap",cursor:"pointer",marginLeft:"4px",fontFamily:"inherit",fontWeight:"600"},
-            title: title,
-            onClick: function(){
-              adminSub = "sync";
-              currentTab = "admin";
-              render();
-              setTimeout(function(){
-                const cards = document.querySelectorAll(".card");
-                for(const c of cards){
-                  if(c.textContent && c.textContent.includes("Full-state JSON backup")){
-                    c.scrollIntoView({behavior:"smooth",block:"center"});
-                    c.style.outline = "2px solid var(--accent)";
-                    setTimeout(function(){c.style.outline="";}, 2000);
-                    break;
-                  }
-                }
-              }, 100);
-            }
-          }, label);
-        }catch(_){ return null; }
-      })()
+      _snapBadge(),        // v179: today's cloud snapshot
+      _localBackupNudge()  // v179: a downloaded copy, weekly (was the v78 daily backup-age badge)
     )
   );
   return bar;
@@ -6553,8 +6855,9 @@ function renderAllocPaste(el){
   const ta=h("textarea",{rows:5,placeholder:"Paste form CSV or TSV here…",style:{marginBottom:"8px"}});
   pasteCard.appendChild(ta);
   pasteCard.appendChild(h("div",{className:"flex",style:{gap:"8px",marginTop:"8px"}},
-    h("button",{className:"btn btn-primary",onClick:()=>{
+    h("button",{className:"btn btn-primary",onClick:async()=>{
     const csv=ta.value.trim();if(!csv)return;
+    if(!(await snapshotBeforeAction("a form-responses import")))return; // v179
     const lines=csv.split("\n");
     const sep=lines[0].includes("\t")?"\t":",";
     const existingMap=new Map(formData.map(r=>[normEmail(r.email),r]));
@@ -6594,7 +6897,7 @@ function renderAllocPaste(el){
       (_lk.pending?" "+_lk.pending+" need linking — see below.":""));saveAll();
     const main=document.querySelector(".main");if(main){main.innerHTML="";renderAlloc(main);}
   }},"Parse & Merge"),
-  h("button",{className:"btn btn-ghost",onClick:()=>{formData=[];toast("Form data cleared");
+  h("button",{className:"btn btn-ghost",onClick:async()=>{if(!(await snapshotBeforeAction("clearing all form responses")))return;formData=[];toast("Form data cleared");
     const main=document.querySelector(".main");if(main){main.innerHTML="";renderAlloc(main);}
   }},"Clear All Responses")
   ));
@@ -9939,10 +10242,11 @@ function renderParentContacts(el){
     rd.readAsText(f);
   });
   importCard.appendChild(pcFile);
-  importCard.appendChild(h("button",{className:"btn btn-primary",onClick:()=>{
+  importCard.appendChild(h("button",{className:"btn btn-primary",onClick:async()=>{
     pcMapHost.innerHTML="";
     const raw=pcTa.value.trim();
     if(!raw){toast("Nothing to import","err");return;}
+    if(!(await snapshotBeforeAction("a parent-contacts import")))return; // v179
     const lines=raw.split(/\r?\n/).filter(l=>l.trim());
     const sep=lines[0].includes("\t")?"\t":",";
     // CSV-aware split: quoted fields may legitimately contain the separator.
@@ -11386,9 +11690,9 @@ function renderPupils(el){
   }
 
   btnRow.appendChild(h("button",{className:"btn btn-primary",title:"Add new pupils and update existing ones. Does NOT remove anyone already in the system.",
-    onClick:()=>doPupilImport("merge")},"➕ Add / Update (safe)"));
+    onClick:async()=>{if(ta.value.trim()&&!(await snapshotBeforeAction("a pupil import")))return;doPupilImport("merge");}},"➕ Add / Update (safe)"));
   btnRow.appendChild(h("button",{className:"btn btn-ghost",style:{color:"var(--amber)"},title:"Replace the entire pupil list with the pasted list. Removes any existing pupil not in the paste. Use this only when pasting a complete MIS export.",
-    onClick:()=>doPupilImport("sync")},"🔄 Full Sync (replace list)"));
+    onClick:async()=>{if(ta.value.trim()&&!(await snapshotBeforeAction("a pupil import (full sync)")))return;doPupilImport("sync");}},"🔄 Full Sync (replace list)"));
   btnRow.appendChild(h("button",{className:"btn btn-ghost",onClick:()=>{
     if(!confirm("Clear all "+pupils.length+" pupils?"))return;
     pupils=[];saveAll();scrollPreservingRender();
@@ -13341,8 +13645,9 @@ function renderVenueDirectory(el){
   csvCard.appendChild(h("p",{style:{fontSize:"11px",color:"var(--text3)",marginBottom:"6px"}},"Columns: Name, Staff Code, Department. Existing venues with matching names are updated."));
   const vTa=h("textarea",{rows:4,placeholder:"Art\tDRP\tCreative Arts\nCricket Nets\tDOC\tSport",style:{marginBottom:"6px"}});
   csvCard.appendChild(vTa);
-  csvCard.appendChild(h("button",{className:"btn btn-primary btn-sm",onClick:()=>{
+  csvCard.appendChild(h("button",{className:"btn btn-primary btn-sm",onClick:async()=>{
     const raw=vTa.value.trim();if(!raw){toast("Nothing to import","err");return;}
+    if(!(await snapshotBeforeAction("a venues import")))return; // v179
     const lines=raw.split("\n").filter(l=>l.trim());
     const sep=lines[0].includes("\t")?"\t":",";
     let added=0,updated=0;
@@ -14595,8 +14900,9 @@ function renderAdminBulk(el){
   (()=>{const seen=new Set();const opts=[["__all__","All dates (whole year)"]];sortedDateIndices().forEach(di=>{const t=_termOfHalf(dates[di].half);if(t&&!seen.has(t)){seen.add(t);opts.push([t,t+" only"]);}});opts.forEach(([v,l])=>_bulkExportTermSel.appendChild(h("option",{value:v},l)));})();
   csvActCard.appendChild(h("div",{style:{display:"flex",alignItems:"center",gap:"6px",marginBottom:"6px",fontSize:"11px",color:"var(--text3)"}},"Export scope:",_bulkExportTermSel));
   csvActCard.appendChild(h("div",{className:"flex",style:{gap:"6px"}},
-    h("button",{className:"btn btn-primary btn-sm",onClick:()=>{
+    h("button",{className:"btn btn-primary btn-sm",onClick:async()=>{
       const csv=csvActTa.value.trim();if(!csv)return;
+      if(!(await snapshotBeforeAction("an activities import")))return; // v179
       const sep=csv.includes("\t")?"\t":",";
       const lines=csv.split("\n");if(lines.length<2){toast("Need at least a header row + one activity","err");return;}
       const headers=lines[0].split(sep).map(s=>s.replace(/^"|"$/g,"").trim().toLowerCase());
@@ -14688,8 +14994,9 @@ function renderAdminBulk(el){
     card.appendChild(h("div",{style:{fontWeight:600,marginBottom:"6px"}},title));
     const ta=h("textarea",{rows:4,placeholder,style:{marginBottom:"8px"}});
     card.appendChild(ta);
-    card.appendChild(h("button",{className:"btn btn-primary btn-sm",onClick:()=>{
+    card.appendChild(h("button",{className:"btn btn-primary btn-sm",onClick:async()=>{
       const csv=ta.value.trim();if(!csv)return;
+      if(!(await snapshotBeforeAction("“"+title+"”")))return; // v179
       const sep=csv.includes("\t")?"\t":",";fn(csv,sep);
     }},"Import"));
     el.appendChild(card);
@@ -14874,10 +15181,11 @@ function renderAdminNewTerm(el){
   clrCard.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text3)",marginBottom:"10px",lineHeight:1.5}},
     "Consent ticks and per-date overrides are copied from the previous year when a successor system is built. Consent given for last year's activities does not carry to this year and should be re-sought. Date overrides are keyed by date INDEX, not by date — so an override carried over from last year now points at a different Saturday. Clear both before running a new year's allocations."));
   const clrRow=h("div",{className:"flex",style:{gap:"8px",flexWrap:"wrap"}});
-  clrRow.appendChild(h("button",{className:"btn btn-ghost",style:{color:"var(--amber)"},onClick:()=>{
+  clrRow.appendChild(h("button",{className:"btn btn-ghost",style:{color:"var(--amber)"},onClick:async()=>{
     const n=Object.keys(consentMap||{}).length;
     if(!n){toast("No consent data to clear");return;}
     if(!confirm("Clear ALL consent for "+n+" pupil"+(n===1?"":"s")+"?\n\nEvery consent tick is removed and must be re-sought for this year's activities.\n\nThis cannot be undone."))return;
+    if(!(await snapshotBeforeAction("clearing all consent")))return; // v179
     consentMap={};
     try{_touchedConsentKeys.clear();}catch(_){}
     _loadedNonEmpty["consentmap"]=false; // intentional emptiness — do not trip the save-guard
@@ -14888,10 +15196,11 @@ function renderAdminNewTerm(el){
     toast("Consent cleared for "+n+" pupil"+(n===1?"":"s"));
     render();
   }},"Clear all consent…"));
-  clrRow.appendChild(h("button",{className:"btn btn-ghost",style:{color:"var(--amber)"},onClick:()=>{
+  clrRow.appendChild(h("button",{className:"btn btn-ghost",style:{color:"var(--amber)"},onClick:async()=>{
     const keys=Object.keys(allocDateOverrides||{});
     if(!keys.length){toast("No date overrides to clear");return;}
     if(!confirm("Clear ALL "+keys.length+" per-date override"+(keys.length===1?"":"s")+"?\n\nEvery pupil falls back to their form-based allocation on every date. Bulk assignments will need to be redone.\n\nThis cannot be undone."))return;
+    if(!(await snapshotBeforeAction("clearing all date overrides")))return; // v179
     keys.forEach(k=>{delete allocDateOverrides[k];_queueOvrDelete(k);_touchedOvrKeys.add(k);});
     saveLocal();
     _lastUserActivity=Date.now();_autosnapDirty=true;
@@ -14913,8 +15222,9 @@ function renderAdminNewTerm(el){
   archCard.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text3)",marginBottom:"12px"}},"Archives the current term data to localStorage under a name you choose, then clears activities, dates, and staff allocations. Staff and pupils are kept."));
   const termNameInp=h("input",{type:"text",placeholder:"e.g. Autumn 2026",style:{width:"200px",marginBottom:"10px"}});
   archCard.appendChild(h("div",null,h("label",{className:"field-label"},"Archive current term as:"),termNameInp));
-  archCard.appendChild(h("button",{className:"btn btn-primary",onClick:()=>{
+  archCard.appendChild(h("button",{className:"btn btn-primary",onClick:async()=>{
     const name=termNameInp.value.trim();if(!name){toast("Enter a term name","err");return;}
+    if(!(await snapshotBeforeAction("“Archive & Start New Term”")))return; // v179
     const archive={name,acts:JSON.parse(JSON.stringify(acts)),dates:JSON.parse(JSON.stringify(dates)),sa:JSON.parse(JSON.stringify(sa)),allocRes,timestamp:new Date().toISOString()};
     try{
       const archives=JSON.parse(localStorage.getItem(_ARCH_KEY)||"[]");
@@ -14956,8 +15266,9 @@ function renderAdminNewTerm(el){
       const row=h("div",{className:"flex-between",style:{padding:"8px 0",borderBottom:"1px solid var(--border)"}});
       row.appendChild(h("div",null,h("div",{style:{fontWeight:600,fontSize:"12px"}},a.name),h("div",{style:{fontSize:"10px",color:"var(--text3)"}},new Date(a.timestamp).toLocaleDateString()+" · "+a.acts.length+" activities · "+a.dates.length+" dates")));
       row.appendChild(h("div",{className:"flex"},
-        h("button",{className:"btn btn-ghost btn-sm",onClick:()=>{
+        h("button",{className:"btn btn-ghost btn-sm",onClick:async()=>{
           if(!confirm("Restore '"+a.name+"'? Current term will be overwritten."))return;
+          if(!(await snapshotBeforeAction("restoring the archived term “"+a.name+"”")))return; // v179
           acts=a.acts;dates=a.dates;sa=a.sa;allocRes=a.allocRes||null;
           saveAll();toast("Restored: "+a.name);render();
         }},"Restore"),
@@ -16363,6 +16674,7 @@ function _renderBlockReview(box,R){
   const go=h("button",{className:"btn btn-primary btn-sm",disabled:!!matched.clashes.length||!!matched.unmatched.length,onClick:async()=>{
     if(R.parsed.sets.some(st=>!R.choices.sets[st.setCode].subject)){toast("Every set needs a subject name","err");return;}
     go.disabled=true;status.textContent="Saving…";
+    if(!(await snapshotBeforeAction("a set-list import"))){go.disabled=false;status.textContent="";return;} // v179
     try{
       const rows=blockImportRows(R.parsed,matched,R.choices,new Date().toISOString());
       const r=await blocksCommit(rows);
@@ -17952,6 +18264,7 @@ function renderAdminSync(el){
   }
 
   el.appendChild(_lockStatusCard()); // v178
+  el.appendChild(_snapshotsCard()); // v179
 
   // SQL
   const sql="create table if not exists lex_data (\n  key text primary key,\n  value jsonb not null,\n  updated_at timestamptz default now()\n);\nalter table lex_data enable row level security;\ncreate policy \"public read\" on lex_data for select using (true);\ncreate policy \"public write\" on lex_data for all using (true);";
@@ -18035,26 +18348,13 @@ function renderAdminSync(el){
   // ── Full-state JSON backup (v50) ──
   // Protects against simultaneous loss of Supabase + browser localStorage (e.g. during Supabase auto-pause
   // on a new device) by keeping a downloadable snapshot of every data table in one file.
-  const backupCard=h("div",{className:"card card-pad mb-16",style:{background:"var(--surface2)",border:"1px solid var(--border2)"}});
+  const backupCard=h("div",{className:"card card-pad mb-16",id:"lex-backup-card",style:{background:"var(--surface2)",border:"1px solid var(--border2)"}});
   backupCard.appendChild(h("div",{style:{fontWeight:700,marginBottom:"6px"}},"💾 Full-state JSON backup"));
   backupCard.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text2)",marginBottom:"10px",lineHeight:"1.7"}},"Downloads every LEX table into one JSON file: activities, staff, pupils, dates, allocations, overrides, form data, venues, consents, sub-groups, attendance, notepad, prior YTD, LEX THINK set lists, and activity log. Use this as an off-platform safety net in case Supabase auto-pauses and local browser storage also disappears. Restore overwrites all current data."));
   const backupBtnRow=h("div",{className:"flex",style:{gap:"8px",flexWrap:"wrap"}});
   backupBtnRow.appendChild(h("button",{className:"btn btn-primary btn-sm",onClick:async()=>{
     try{await blocksLoad();}catch(_){} // v174: the latest set lists (a failed read keeps this device's copy)
-    const payload={
-      _backupVersion:1,
-      _createdAt:new Date().toISOString(),
-      _appVersion:"v50",
-      acts,staff,sa,pupils,dates,priorYTD,
-      allocOverrides,allocDateOverrides,allocHistory,
-      formData,allocRes,venues,consentMap,
-      savedSubGroups,
-      notepad:notepadText||"",
-      attendance,
-      activityLog:activityLog.slice(-500),
-      snapshots:(typeof snapshots!=="undefined"&&snapshots)||[],
-      blocks:blockBackupPayload() // v174: set lists (sets, leads, rooms, membership)
-    };
+    const payload=_fullBackupPayload(true); // v179: the same builder as the cloud snapshots
     try{
       const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
       const url=URL.createObjectURL(blob);
@@ -18079,61 +18379,7 @@ function renderAdminSync(el){
       if(!data||!data._backupVersion){
         if(!confirm("This file does not look like a LEX backup (no _backupVersion field). Restore anyway?")){restoreInp.value="";return;}
       }
-      // Summary of what we're about to import
-      const summary=[
-        "Pupils: "+(Array.isArray(data.pupils)?data.pupils.length:0),
-        "Staff: "+(Array.isArray(data.staff)?data.staff.length:0),
-        "Activities: "+(Array.isArray(data.acts)?data.acts.length:0),
-        "Dates: "+(Array.isArray(data.dates)?data.dates.length:0),
-        "Alloc results: "+(Array.isArray(data.allocRes)?data.allocRes.length:0),
-        "Form responses: "+(Array.isArray(data.formData)?data.formData.length:0),
-        "LEX THINK set lists: "+(data.blocks&&Array.isArray(data.blocks.sets)&&data.blocks.sets.length?data.blocks.sets.length+" sets and groups":"none in this backup — the current ones are kept")
-      ];
-      const when=data._createdAt?new Date(data._createdAt).toLocaleString():"unknown date";
-      if(!confirm("⚠️ RESTORE FROM BACKUP — overwrites ALL current data.\n\nFrom: "+when+"\n\n"+summary.join("\n")+"\n\nThis cannot be undone (but current state will be saved as a snapshot first).\n\nProceed?")){
-        restoreInp.value="";return;
-      }
-      // Save current state as a snapshot before overwriting, if the helper exists
-      try{if(typeof takeSnapshot==="function")takeSnapshot("Pre-restore (before JSON backup import)");}catch(_){}
-      // Apply each field only if present — allows partial backups
-      if(Array.isArray(data.acts))acts=data.acts;
-      if(Array.isArray(data.staff))staff=data.staff;
-      if(data.sa&&typeof data.sa==="object")sa=data.sa;
-      if(Array.isArray(data.pupils))pupils=data.pupils;
-      if(Array.isArray(data.dates))dates=data.dates;
-      if(data.priorYTD&&typeof data.priorYTD==="object")priorYTD=data.priorYTD;
-      if(data.allocOverrides&&typeof data.allocOverrides==="object")allocOverrides=data.allocOverrides;
-      if(data.allocDateOverrides&&typeof data.allocDateOverrides==="object")allocDateOverrides=data.allocDateOverrides;
-      if(Array.isArray(data.allocHistory))allocHistory=data.allocHistory;
-      if(Array.isArray(data.formData))formData=data.formData;
-      if(Array.isArray(data.allocRes)||data.allocRes===null)allocRes=data.allocRes;
-      if(Array.isArray(data.venues))venues=data.venues;
-      if(data.consentMap&&typeof data.consentMap==="object")consentMap=data.consentMap;
-      if(Array.isArray(data.savedSubGroups))savedSubGroups=data.savedSubGroups;
-      if(typeof data.notepad==="string")notepadText=data.notepad;
-      if(data.attendance&&typeof data.attendance==="object")attendance=data.attendance;
-      if(Array.isArray(data.activityLog))activityLog=data.activityLog;
-      // v169: a confirmed restore replaces newer versions on purpose. v176: only the keys it restored.
-      markBlobsForOverwrite([["acts",Array.isArray(data.acts)],["staff",Array.isArray(data.staff)],["pupils",Array.isArray(data.pupils)],["dates",Array.isArray(data.dates)],
-        ["priorytd",!!(data.priorYTD&&typeof data.priorYTD==="object")],["allocoverrides",!!(data.allocOverrides&&typeof data.allocOverrides==="object")],
-        ["allochistory",Array.isArray(data.allocHistory)],["formdata",Array.isArray(data.formData)],["allocres",Array.isArray(data.allocRes)||data.allocRes===null],
-        ["venues",Array.isArray(data.venues)],["consentmap",!!(data.consentMap&&typeof data.consentMap==="object")],["subgroups",Array.isArray(data.savedSubGroups)],
-        ["notepad",typeof data.notepad==="string"]].filter(x=>x[1]).map(x=>x[0]),"backup file from "+when);
-      saveAll();
-      // v174: set lists — written back as a new import; a backup without them keeps the current ones.
-      const _br=blockRestoreRows(data.blocks,new Date().toISOString());
-      let _brNote=" (set lists kept as they were)";
-      if(_br&&!supaClient){_brNote=" (set lists NOT restored: no cloud connection)";toast("Set lists NOT restored — no cloud connection. Restore again once connected.","err");}
-      else if(_br){
-        try{await blocksCommit(_br);await blocksLoad();_brNote=" (with "+_br.sets.length+" set-list rows)";}
-        catch(e2){console.error("Restoring set lists failed",e2);_brNote=" (set lists NOT restored: "+(e2.message||e2)+")";
-          toast("Set lists NOT restored — "+(e2.message||e2)+". Re-import them in Settings → Blocks.","err");}
-      }
-      logAction("RESTORE","Full-state JSON restored from "+(data._createdAt||"unknown date")+_brNote);
-      toast("Restored ✓ — reloading UI");
-      // Force a full re-render
-      const main=document.querySelector(".main");if(main){main.innerHTML="";render();}
-      else render();
+      await _restoreFullBackup(data,"backup file"); // v179
     }catch(err){
       console.error("Restore failed",err);
       toast("Restore failed — file may not be valid JSON. See console.","err");
@@ -18196,8 +18442,9 @@ function renderAdminSync(el){
       );
       row.appendChild(metaLeft);
       const btns=h("div",{className:"flex",style:{gap:"4px"}});
-      btns.appendChild(h("button",{className:"btn btn-ghost btn-xs",onClick:()=>{
+      btns.appendChild(h("button",{className:"btn btn-ghost btn-xs",onClick:async()=>{
         if(!confirm("Restore this auto-snapshot from "+when.toLocaleString()+"?\n\nThis overwrites current acts, sa, allocRes, allocOverrides, pupils, formData, consentMap, and dates.\n\nNote: attendance and per-date overrides are NOT touched — those live in cloud per-row tables and are protected by their own design.\n\nA fresh snapshot will be taken FIRST so you can undo if needed."))return;
+        if(!(await snapshotBeforeAction("restoring an auto-snapshot")))return; // v179
         // Take a defensive snapshot BEFORE restoring — user can undo
         _autosnapDirty=true;autoSnapshot();
         if(snap.acts)acts=snap.acts;
@@ -18635,8 +18882,9 @@ function renderAdminLog(el){
         h("div",{style:{fontSize:"10px",color:"var(--text3)"}},ts)
       ));
       row.appendChild(h("div",{className:"flex",style:{gap:"6px"}},
-        h("button",{className:"btn btn-ghost btn-sm",onClick:()=>{
+        h("button",{className:"btn btn-ghost btn-sm",onClick:async()=>{
           if(!confirm("Restore snapshot '"+snap.label+"'? This will overwrite current activities, calendar assignments, allocation results and overrides. Pupils and staff are unchanged."))return;
+          if(!(await snapshotBeforeAction("restoring a local snapshot")))return; // v179
           const d=snap.data;
           acts=d.acts;sa=d.sa;allocRes=d.allocRes||null;
           allocOverrides=d.allocOverrides;allocDateOverrides=d.allocDateOverrides;
@@ -18780,6 +19028,7 @@ async function _runRefreshCycle(){
     presenceHeartbeat();
     _checkAppVersion(); // v80: lightweight cloud version check each cycle
     _checkVersionGate(); // v178: the lock's minimum may have been raised (read at most every 5 minutes)
+    _dailyCloudSnapshotTick(); // v179: a new day, or a failed snapshot to retry
     if(_autosnapDirty)autoSnapshot();
     drainPendingOvrDeletes(); // v66: keep retrying unconfirmed override deletes
 
