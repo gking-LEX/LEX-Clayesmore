@@ -965,7 +965,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v174';
+const CURRENT_VERSION = 'v175';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -1914,8 +1914,71 @@ function takeSnapshot(label){
     pupils:JSON.parse(JSON.stringify(pupils))};
   snapshots.unshift({ts:new Date().toISOString(),label:label||"Snapshot",data});
   if(snapshots.length>10)snapshots=snapshots.slice(0,10);
-  localStorage.setItem("lex12-snapshots",JSON.stringify(snapshots));
-  logAction("SNAPSHOT","Saved: "+label);
+  // v175: this write had no guard. With local storage full it threw, so the snapshot was never
+  // stored and whatever called it stopped there — an engine run never reached its saveAll().
+  // The newest pre-run backup on 30 Sept was from 8 Sept. Drop the oldest until it fits; false
+  // if even this one alone does not (it stays in memory, so a downloaded backup still has it).
+  let saved=false;const had=snapshots.length;
+  for(let n=snapshots.length;n>=1&&!saved;n--){
+    try{localStorage.setItem("lex12-snapshots",JSON.stringify(snapshots.slice(0,n)));snapshots=snapshots.slice(0,n);saved=true;}catch(_){}
+  }
+  logAction("SNAPSHOT",saved?"Saved: "+label+(snapshots.length<had?" (dropped "+(had-snapshots.length)+" older: browser storage full)":"")
+    :"NOT saved (browser storage full): "+label);
+  return saved;
+}
+// v175: every engine run leaves a restore point of what it is about to replace, BEFORE it runs.
+// It used to be taken after the run, so a "Pre-run backup" held the new results, not the old.
+// If browser storage cannot hold it, the backup is offered as a file instead — the run does not
+// go ahead without one.
+function _preRunBackup(){
+  if(takeSnapshot("Pre-run backup")!==false)return true;
+  if(!confirm("The pre-run backup could not be saved: this browser's storage is full.\n\nOK: download the backup as a file, then run.\nCancel: do not run."))return false;
+  try{
+    const blob=new Blob([JSON.stringify(snapshots[0],null,1)],{type:"application/json"});
+    const a=h("a",{href:URL.createObjectURL(blob),download:"LEX_pre-run_backup_"+new Date().toISOString().slice(0,16).replace(/[:T]/g,"-")+".json"});
+    document.body.appendChild(a);a.click();a.remove();
+    return true;
+  }catch(e){console.error("pre-run backup download failed",e);toast("Not run: the pre-run backup could not be saved or downloaded","err");return false;}
+}
+// v175: the engine reads THIS tab's copy of the overrides, form responses, activities, pupils and
+// dates. On 30 Sept it ran on a copy holding 17 of the cloud's 70 overrides and replaced every
+// result. Before a run, check that no other copy has written any of them since this tab read
+// them. [] = current; [keys] = changed elsewhere; null = could not check.
+const _ENGINE_INPUT_KEYS=["allocoverrides","formdata","acts","pupils","dates"];
+async function _engineInputsStale(){
+  if(!supaClient)return null;
+  // This tab's own save changes the cloud's stamp: let it land (and record the new stamp) first.
+  for(let i=0;i<50&&_supaWriteInFlight;i++)await new Promise(r=>setTimeout(r,200));
+  if(_supaWriteInFlight)return null;
+  if(_hasPendingSupaWrite&&!(await forceSaveNow()))return null;
+  try{
+    const res=await fetch(`${supaClient.url}/rest/v1/lex_data?key=in.(${_ENGINE_INPUT_KEYS.map(k=>"lex12-"+k).join(",")})&select=key,updated_at`,{
+      headers:{"apikey":supaClient.key,"Authorization":"Bearer "+supaClient.key,"Accept":"application/json"}});
+    if(!res.ok)return null;
+    const rows=await res.json();if(!Array.isArray(rows))return null;
+    const cloud={};rows.forEach(r=>{cloud[String(r.key).replace(/^lex12-/,"")]=r.updated_at||"";});
+    // No stamp here = this tab's version is unknown, which is not "current".
+    return _ENGINE_INPUT_KEYS.filter(k=>!_hasStamp(k)||(k in cloud?cloud[k]!==_blobStamps[k]:_blobStamps[k]!==null));
+  }catch(e){console.error("_engineInputsStale",e.message||e);return null;}
+}
+// Run the engine only on current data. auto: a silent re-run after an override change — it is
+// skipped rather than asking. Returns true if the engine ran.
+async function runAllocationChecked(auto){
+  if(supaClient){
+    const stale=await _engineInputsStale();
+    if(stale===null){
+      if(auto){toast("Allocation not re-run: could not check the cloud for newer changes","err");return false;}
+      if(!confirm("LEX cannot reach the cloud to check whether another device has changed the overrides, responses, activities, pupils or dates since this page loaded.\n\nRun on this copy anyway?"))return false;
+    }else if(stale.length){
+      const what=stale.map(k=>_BLOB_LABEL[k]||k).join(", ");
+      logAction("ALLOCATION_NOT_RUN","Newer "+what+" in the cloud than this copy — loaded them; not run");
+      await _refreshBeforeEdit("engine run: newer "+what);
+      toast("Not run: "+what+" changed on another device since this page loaded. The newer version is now showing — check it, then run again.","err");
+      return false;
+    }
+  }
+  runAllocEngineV12();
+  return true;
 }
 // Waiting list: populated after allocation run
 let waitingList={}; // actName -> [{email, choiceIndex}]
@@ -2035,18 +2098,28 @@ const _BLOB_LABEL={acts:"Activities",staff:"Staff",pupils:"Pupils",dates:"Dates"
   allochistory:"Allocation history",formdata:"Form responses",allocres:"Allocation results",venues:"Venues",consentmap:"Consent",
   subgroups:"Sub-groups",notepad:"Notepad",designations:"Designations"};
 let _blobStamps={};        // key → updated_at this tab last read or wrote; null = no row in the cloud yet
+let _blobStampH={};        // v175: key → hash of the value its stamp was loaded with (see _primeBlobBaseline)
 let _blobDirtyBase={};     // key → {stamp,h}: unsaved edits made on version `stamp`, value hash h (kept across a reload)
 let _blobWriteSeq={};      // key → this tab's successful writes, so a read that crossed one is ignored
 let _blobForce=new Set();  // keys a confirmed restore/import may overwrite (markBlobsForOverwrite)
 let _blobTakenClean=new Set();
 let _blobMergedUnder=false;
 let _blobConflictLog=[];
+// v175: each stamp is stored WITH a hash of the value it is the version of, in one item, so the
+// pair is written or not written together. v169 kept the stamps on their own: local storage is
+// shared by every tab and a full one keeps a grown key's old value, so after a reload a stamp
+// could say "current" beside data days older, and the first save wrote that data over the
+// cloud with a valid version. (The old "lex12-blobstamps" item is no longer read.)
 function _loadBlobMeta(){
-  try{_blobStamps=JSON.parse(localStorage.getItem("lex12-blobstamps")||"{}")||{};}catch(_){_blobStamps={};}
+  let ver={};try{ver=JSON.parse(localStorage.getItem("lex12-blobver")||"{}")||{};}catch(_){ver={};}
+  _blobStamps={};_blobStampH={};
+  Object.keys(ver).forEach(k=>{const p=ver[k];if(Array.isArray(p)&&p.length===2){_blobStamps[k]=p[0];_blobStampH[k]=p[1];}});
   try{_blobDirtyBase=JSON.parse(localStorage.getItem("lex12-blobdirty")||"{}")||{};}catch(_){_blobDirtyBase={};}
 }
 function _saveBlobMeta(){
-  try{localStorage.setItem("lex12-blobstamps",JSON.stringify(_blobStamps));localStorage.setItem("lex12-blobdirty",JSON.stringify(_blobDirtyBase));}catch(_){}
+  const ver={};
+  Object.keys(_blobStamps).forEach(k=>{const s=_lastSyncedFingerprints[k];if(typeof s==="string")ver[k]=[_blobStamps[k],_strHash(s)];});
+  try{localStorage.setItem("lex12-blobver",JSON.stringify(ver));localStorage.setItem("lex12-blobdirty",JSON.stringify(_blobDirtyBase));}catch(_){}
 }
 function _strHash(s){let h=0x811c9dc5;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,0x01000193);}return (h>>>0).toString(16)+":"+s.length;}
 function _hasStamp(k){return Object.prototype.hasOwnProperty.call(_blobStamps,k);}
@@ -2320,7 +2393,9 @@ function markBlobsForOverwrite(keys){
 async function _adoptCloudStamps(){
   for(const k of _BLOB_KEYS){
     const g=await supaGetWithStamp("lex12-"+k);
-    if(g){_blobStamps[k]=g.stamp;try{_lastSyncedFingerprints[k]=JSON.stringify(_stateForKey(k));}catch(_){}delete _blobDirtyBase[k];}
+    // v175: take the value read, not this tab's: if another copy wrote between the push and this
+    // read, this tab's copy is not the version the stamp names.
+    if(g){_blobStamps[k]=g.stamp;if(g.stamp!==null&&_blobTypeOk(k,g.value))_setStateForKey(k,g.value);try{_lastSyncedFingerprints[k]=JSON.stringify(_stateForKey(k));}catch(_){}delete _blobDirtyBase[k];}
   }
   _saveBlobMeta();
 }
@@ -2328,6 +2403,14 @@ async function _adoptCloudStamps(){
 function _primeBlobBaseline(){
   _loadBlobMeta();
   _BLOB_KEYS.forEach(k=>{if(_lastSyncedFingerprints[k]===undefined){try{_lastSyncedFingerprints[k]=JSON.stringify(_stateForKey(k));}catch(_){}}});
+  // v175: a stamp is kept only beside the data it is the version of — or beside the exact unsaved
+  // edits recorded as made on it. Otherwise this copy's version is unknown: the first write
+  // reads the cloud first and merges onto it (_writeBlobKey), instead of writing blind.
+  Object.keys(_blobStamps).forEach(k=>{
+    const fp=_lastSyncedFingerprints[k],h=typeof fp==="string"?_strHash(fp):null,rec=_blobDirtyBase[k];
+    if(h!==null&&(h===_blobStampH[k]||(rec&&rec.stamp===_blobStamps[k]&&rec.h===h)))return;
+    delete _blobStamps[k];delete _blobStampH[k];
+  });
 }
 // When the tab goes away mid-save, remember which keys hold unsaved edits (and exactly which
 // version of them) so a reload can finish the write — if nothing has changed meanwhile.
@@ -2932,8 +3015,17 @@ async function loadFromSupabase(){
   const gotAny=blobRes.some(r=>r!==null)||attMap!==null||ovrMap!==null;
   if(!gotAny){
     syncStatus="error";
-    console.warn("loadFromSupabase: Supabase unreachable (all 504/null) — loading from localStorage");
-    loadLocal();
+    // v175: this called loadLocal(), replacing everything this tab held with this browser's
+    // local-storage copy — while the tab's version stamps and last-synced fingerprints still
+    // described the cloud's newer version. Local storage is shared by every tab and silently
+    // stops updating a key that has grown once it is full, so that copy can be days old. The
+    // next save then saw "edits" (the old copy) and wrote them through the v169 check with a
+    // valid stamp — or, on a conflict, merged them as deletions. Any refresh that finds the
+    // network down (a laptop waking, a Wi-Fi drop) did this. The 29–30 Sept loss (53 of 70
+    // half-term overrides and their reasons, 12 of 38 consent entries) has exactly that shape.
+    // The tab already holds what it last read, and on first load initData has read local
+    // storage before this runs: keep what is in memory.
+    console.warn("loadFromSupabase: Supabase unreachable — keeping what this tab already holds");
     return;
   }
   // v92: arm the empty-overwrite save-guard from the cloud blobs we just fetched, BEFORE any
@@ -6763,7 +6855,7 @@ function renderAllocRun(el){
   const controls=h("div",{className:"flex mb-12"});
   if(formData.length>0)controls.appendChild(h("span",{className:"badge badge-green"},formData.length+" responses loaded"));
   else controls.appendChild(h("span",{className:"badge badge-red"},"No responses — paste data first"));
-  controls.appendChild(h("button",{className:"btn btn-success",style:{padding:"10px 24px",fontSize:"14px"},onClick:()=>{runAllocEngineV12();
+  controls.appendChild(h("button",{className:"btn btn-success",style:{padding:"10px 24px",fontSize:"14px"},onClick:async()=>{if(!(await runAllocationChecked(false)))return; // v175
     // Re-render just the alloc content area
     const main=document.querySelector(".main");if(main){main.innerHTML="";renderAlloc(main);}
   }},"⚡ Run Allocation (Both Halves)"));
@@ -8714,6 +8806,7 @@ function _allocBeats(s,h,a){
 
 function runAllocEngineV12(){
   const log=[];if(!formData.length){allocLog=["ERROR: No form data loaded. Go to Paste Responses first."];return;}
+  if(!_preRunBackup()){allocLog=["NOT RUN: the pre-run backup could not be saved."];return;} // v175: before anything changes
   // v137: resolve any outstanding personal-address responses first, so a run never
   // silently drops a pupil just because they were not on the Paste Responses screen.
   try{
@@ -8978,7 +9071,6 @@ function runAllocEngineV12(){
   const s1tot=allRes.filter(r=>r.half===_h1()&&r.alloc).length;
   const s2tot=allRes.filter(r=>r.half===_h2()&&r.alloc).length;
   logAction("ALLOCATION_RUN","S1: "+s1tot+" allocated, S2: "+s2tot+" allocated");
-  takeSnapshot("Pre-run backup");
   saveAll();
 }
 
@@ -8988,8 +9080,8 @@ let _allocDbc=null;
 function autoRealloc(msg){
   if(!formData||!formData.length)return;
   clearTimeout(_allocDbc);
-  _allocDbc=setTimeout(()=>{
-    runAllocEngineV12();
+  _allocDbc=setTimeout(async()=>{
+    if(!(await runAllocationChecked(true)))return; // v175
     toast(msg||"Allocation updated ✓");
     // Re-render to reflect updated allocRes and capacity counts
     if(currentTab==="alloc"){const m=document.querySelector(".main");if(m){m.innerHTML="";renderAlloc(m);}}
@@ -18055,7 +18147,7 @@ function renderAdminLog(el){
   snapBtnRow.appendChild(snapNameInp);
   snapBtnRow.appendChild(h("button",{className:"btn btn-primary btn-sm",onClick:()=>{
     const label=snapNameInp.value.trim()||new Date().toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
-    takeSnapshot(label);toast("Snapshot saved: "+label);
+    if(takeSnapshot(label))toast("Snapshot saved: "+label);else toast("Snapshot NOT saved: browser storage is full","err"); // v175
     const m=document.querySelector(".main");if(m){m.innerHTML="";renderAdmin(m);}
   }},"💾 Save Snapshot Now"));
   el.appendChild(snapBtnRow);

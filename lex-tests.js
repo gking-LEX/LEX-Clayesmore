@@ -959,6 +959,7 @@ var ENG_SRC = [
   grab("function overrideWantsReason(half,email){", "\r\n}", "overrideWantsReason"),
   grab("function allocPriorHalves(fd,half,runRows,engMap){", "\r\n}", "allocPriorHalves"),
   grab("function _allocBeats(s,h,a){", "\r\n}", "_allocBeats"),
+  grab("function _preRunBackup(){", "\r\n}", "_preRunBackup"),
   grab("function runAllocEngineV12(){", "\r\n}\r\n", "runAllocEngineV12")
 ].join("\n");
 var ENG = (w) => new Function("W", `
@@ -972,7 +973,8 @@ var ENG = (w) => new Function("W", `
   function halfLabel(h){return h;}
   function autoLinkFormEmails(){return {linked:0,pending:0};}
   function logAction(a,d){actions.push(a+" "+d);}
-  function takeSnapshot(){} function saveAll(){} function invalidateCaches(){}
+  function takeSnapshot(l){return W.onSnap?W.onSnap(l,allocRes):undefined;} function saveAll(){} function invalidateCaches(){}
+  function confirm(){return !!W.confirmOk;} function toast(){}
   function autoRealloc(m){reruns.push(m);}
   ${ENG_SRC}
   return {run(){runAllocEngineV12();return {res:allocRes,log:allocLog,wl:waitingList};},
@@ -1286,8 +1288,14 @@ var P0_SRC = [
   grab("function _noteDirtyBlobsNow(){", "\r\n}", "_noteDirtyBlobsNow"),
   grab("function _refreshFingerprintsAfterLoad(){", "\r\n}", "_refreshFingerprintsAfterLoad"),
   grab("function saveSupa(){", "\r\n}", "saveSupa"),
-  grab("function _flushOnUnload(){", "\r\n}", "_flushOnUnload")
+  grab("function _flushOnUnload(){", "\r\n}", "_flushOnUnload"),
+  grab("async function forceSaveNow(){", "\r\n}", "forceSaveNow"),
+  grab("const _ENGINE_INPUT_KEYS=[", "];", "_ENGINE_INPUT_KEYS"),
+  grab("async function _engineInputsStale(){", "\r\n}", "_engineInputsStale"),
+  grab("async function _adoptCloudStamps(){", "\r\n}", "_adoptCloudStamps")
 ].join("\n");
+// v175: the branch loadFromSupabase takes when every read fails (a laptop waking, Wi-Fi down).
+var P0_UNREACHABLE = grab("  if(!gotAny){", "\r\n  }", "loadFromSupabase unreachable branch");
 var mkClient = (server, ls, opts) => new Function("SERVER", "LS", "OPTS", `
   let acts=[],staff=[],pupils=[],dates=[],priorYTD={},allocOverrides={},allocHistory=[],formData=[],allocRes=[],venues=[],
       consentMap={},savedSubGroups={},notepadText="",designations=[],sa={},overviewData={},attendance={};
@@ -1314,10 +1322,14 @@ var mkClient = (server, ls, opts) => new Function("SERVER", "LS", "OPTS", `
   }
   // What a reload does before the cloud answers: local storage is the baseline.
   function loadLocalOnly(values){Object.entries(values).forEach(([k,v])=>_setStateForKey(k,JSON.parse(JSON.stringify(v))));_primeBlobBaseline();}
-  return {load,loadLocalOnly,push:_pushDirtyBlobs,saveSupa,flush:_flushOnUnload,noteDirty:_noteDirtyBlobsNow,
+  // What the real loadLocal() does to the blob keys: this browser's local-storage copy replaces
+  // what the tab holds. Called only if the shipped branch below still calls it.
+  function loadLocal(){_BLOB_KEYS.forEach(k=>{const raw=localStorage.getItem("lex12-"+k);if(raw)_setStateForKey(k,JSON.parse(raw));});}
+  async function refreshUnreachable(){const gotAny=false;${P0_UNREACHABLE}}
+  return {load,loadLocalOnly,refreshUnreachable,engineStale:_engineInputsStale,adopt:_adoptCloudStamps,rawSet:(k,v)=>supaSet("lex12-"+k,v),push:_pushDirtyBlobs,saveSupa,flush:_flushOnUnload,noteDirty:_noteDirtyBlobsNow,
     markOverwrite:markBlobsForOverwrite,merge:_blobMerge,ABSENT:_ABSENT,conflicts,
     get acts(){return acts;},set acts(v){acts=v;},get ovr(){return allocOverrides;},set ovr(v){allocOverrides=v;},
-    get notepad(){return notepadText;},set notepad(v){notepadText=v;},
+    get notepad(){return notepadText;},set notepad(v){notepadText=v;},get consent(){return consentMap;},
     setPending(v){_hasPendingSupaWrite=v;},stamps:()=>_blobStamps,newStamp:_newStamp};`)(server, ls, opts || {});
 var mkLS = () => { const m = {}; return { getItem: k => (k in m ? m[k] : null), setItem: (k, v) => { m[k] = String(v); }, removeItem: k => { delete m[k]; }, _m: m }; };
 var ACTS0 = [{ id: "A1", n: "Golf", cap: 14, v: "Range", di: [0, 1], staff: ["JAR"] }, { id: "A2", n: "Chess", cap: 10, v: "Library", di: [0], staff: [] },
@@ -2189,10 +2201,155 @@ S("Structural integrity");
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// v175 — P0: 29–30 Sept. Between two backups the half-term overrides went from 70 to 17 (and lost
+// their reasons) and consent from 38 entries to 26, through v169's version check. The copy that
+// went up was this browser's local storage — full, so it had stopped taking the keys that grew —
+// loaded into a live tab whose version stamps still said "current". Invented data throughout.
+var mkOverrides = n => { const o = { a1: {}, a2: {}, _reason: { a2: {} } };
+  for (let i = 1; i <= n; i++) { o.a2["pupil" + i + "@c.com"] = i % 2 ? "Golf" : "Chess";
+    if (i > 17 && i % 3 === 0) o._reason.a2["pupil" + i + "@c.com"] = { to: o.a2["pupil" + i + "@c.com"], why: "clash" }; }
+  if (n <= 17) delete o._reason;                             // the old copy predates any reason
+  return o; };
+var mkConsent = n => { const c = {}; for (let i = 1; i <= n; i++) c["pupil" + i + "@c.com"] = { A1: true }; return c; };
+async function p0v175Tests() {
+  S("v175 — P0: an old local copy never reaches the cloud");
+  const O70 = mkOverrides(70), O17 = mkOverrides(17), C38 = mkConsent(38), C26 = mkConsent(26);
+  const nOvr = o => Object.keys((o && o.a2) || {}).length;
+  const nRsn = o => Object.keys(((o && o._reason) || {}).a2 || {}).length;
+  // 1. The incident: a refresh that finds the network down, then any save.
+  {
+    const srv = mkServer({ acts: ACTS0, allocoverrides: O70, consentmap: C38 });
+    const ls = mkLS();
+    const T = mkClient(srv, ls); await T.load();
+    // Local storage filled up days ago: the keys that grew since kept their old values.
+    ls.setItem("lex12-allocoverrides", JSON.stringify(O17)); ls.setItem("lex12-consentmap", JSON.stringify(C26));
+    await T.refreshUnreachable();
+    t("a refresh that cannot reach the cloud keeps what the tab holds", nOvr(T.ovr) === 70 && Object.keys(T.consent).length === 38, nOvr(T.ovr) + " overrides");
+    T.acts.find(a => a.id === "A1").cap = 15; await T.push();          // an unrelated save later
+    const o = srv.get("allocoverrides");
+    t("…and the next save leaves all 70 overrides in the cloud", nOvr(o) === 70, nOvr(o) + " in the cloud");
+    t("…with their reasons", nRsn(o) === nRsn(O70) && nRsn(o) > 0, nRsn(o) + " reasons");
+    t("…and all 38 consent entries", Object.keys(srv.get("consentmap")).length === 38, Object.keys(srv.get("consentmap")).length + " consent entries");
+    t("…while the edit that was made goes up", srv.get("acts").find(a => a.id === "A1").cap === 15);
+  }
+  // 2. A reload beside a full local storage: stamps say "current", data is old; edit before the cloud answers.
+  {
+    const srv = mkServer({ allocoverrides: O70, consentmap: C38 });
+    const ls = mkLS();
+    const T = mkClient(srv, ls); await T.load();                        // records the current versions
+    const R = mkClient(srv, ls); R.loadLocalOnly({ allocoverrides: O17, consentmap: C26 });
+    R.ovr.a2["newcomer@c.com"] = "Polo"; R.consent["newcomer@c.com"] = { A1: true };
+    await R.load(); await R.push();
+    const o = srv.get("allocoverrides");
+    t("reload with an old local copy: the edit is added to the cloud's 70, not written over them", nOvr(o) === 71 && o.a2["newcomer@c.com"] === "Polo", nOvr(o) + " in the cloud");
+    t("…reasons kept", nRsn(o) === nRsn(O70));
+    t("…consent: 38 kept plus the new one", Object.keys(srv.get("consentmap")).length === 39);
+    t("…and the tab now shows the cloud's overrides", nOvr(R.ovr) === 71);
+  }
+  // 3. The same, when the cloud load never lands before the save (focus on an input bails it).
+  {
+    const srv = mkServer({ allocoverrides: O70 });
+    const ls = mkLS();
+    const T = mkClient(srv, ls); await T.load();
+    const R = mkClient(srv, ls); R.loadLocalOnly({ allocoverrides: O17 });
+    R.ovr.a2["newcomer@c.com"] = "Polo"; await R.push();
+    t("save before the cloud load: the old copy is merged onto the cloud's, not written", nOvr(srv.get("allocoverrides")) === 71, nOvr(srv.get("allocoverrides")) + " in the cloud");
+  }
+  // 4. A reload whose local copy IS the version it recorded still writes straight through.
+  {
+    const srv = mkServer({ allocoverrides: O70 });
+    const ls = mkLS();
+    const T = mkClient(srv, ls); await T.load();
+    const R = mkClient(srv, ls); R.loadLocalOnly({ allocoverrides: O70 });
+    R.ovr.a2["newcomer@c.com"] = "Polo";
+    const b = srv.log.length; await R.push();
+    t("a reload with a matching local copy keeps its version: one write, no extra read",
+      srv.log.slice(b).join(";") === "PATCH lex12-allocoverrides" && nOvr(srv.get("allocoverrides")) === 71, srv.log.slice(b).join(";"));
+  }
+  // 5. The engine refuses to run on a copy another device has moved past.
+  {
+    const srv = mkServer({ allocoverrides: O70, formdata: [], acts: ACTS0, pupils: [], dates: [] });
+    let down = false;
+    const net = Object.assign({}, srv, { fetch: async (u, o) => { if (down) throw new TypeError("Failed to fetch"); return srv.fetch(u, o); } });
+    const A = mkClient(net, mkLS()), B = mkClient(srv, mkLS()); await A.load(); await B.load();
+    t("engine check: a current copy may run", JSON.stringify(await A.engineStale()) === "[]");
+    B.ovr.a2["late@c.com"] = "Golf"; await B.push();
+    t("engine check: overrides changed on another device → refused", JSON.stringify(await A.engineStale()) === '["allocoverrides"]');
+    await A.load();
+    t("engine check: after loading them, it may run", JSON.stringify(await A.engineStale()) === "[]");
+    A.ovr.a2["mine@c.com"] = "Polo"; A.setPending(true);
+    t("engine check: this copy's own unsaved edit is saved first, not taken for someone else's",
+      JSON.stringify(await A.engineStale()) === "[]" && srv.get("allocoverrides").a2["mine@c.com"] === "Polo");
+    const C = mkClient(srv, mkLS()); C.loadLocalOnly({ allocoverrides: O17 });
+    t("engine check: a copy whose version is unknown is not treated as current", (await C.engineStale()).includes("allocoverrides"));
+    down = true;
+    t("engine check: no network → 'could not check', not 'current'", (await A.engineStale()) === null);
+  }
+  // 5b. "Push local data to Supabase" (unconditional), then another copy writes before this tab
+  // records the cloud's versions: the tab must take that version, not pair its own copy with it.
+  {
+    const srv = mkServer({ allocoverrides: O70 });
+    const A = mkClient(srv, mkLS()), B = mkClient(srv, mkLS()); await A.load();
+    A.ovr.a2["pushed@c.com"] = "Golf"; await A.rawSet("allocoverrides", A.ovr);   // the push
+    await B.load(); B.ovr.a2["between@c.com"] = "Chess"; await B.push();        // lands in between
+    await A.adopt();
+    A.ovr.a2["after@c.com"] = "Polo"; await A.push();
+    const o = srv.get("allocoverrides");
+    t("after a push-all, a write that landed in between is not overwritten by the next save",
+      o.a2["between@c.com"] === "Chess" && o.a2["pushed@c.com"] === "Golf" && o.a2["after@c.com"] === "Polo" && nOvr(o) === 73, nOvr(o) + " in the cloud");
+  }
+  // 6. Every run leaves a pre-run backup, taken BEFORE the run.
+  {
+    const D = [{ full: "05/09/2026", half: "A1" }, { full: "12/09/2026", half: "A1" },
+               { full: "07/11/2026", half: "A2" }, { full: "14/11/2026", half: "A2" }];
+    const act = (n, cap) => ({ n, cap, di: [0, 1, 2, 3] });
+    const fd = [{ email: "new@c.com", timestamp: "01/09/2026 09:00:00", s1c1: "Golf", c1: "Golf", s1c2: "", s1c3: "", c2: "", c3: "", s2c1: "", s2c2: "", s2c3: "" }];
+    const old = [{ email: "old@c.com", half: "A1", alloc: "Chess", st: "1ST" }];
+    let seen = null;
+    const out = ENG({ dates: D, acts: [act("Golf", 4), act("Chess", 4)], fd, res: clone(old),
+      onSnap: (l, res) => { seen = { l, res: clone(res) }; } }).run();
+    t("the engine takes a 'Pre-run backup' on every run", seen && seen.l === "Pre-run backup");
+    t("…before the run: it holds the results being replaced", seen && JSON.stringify(seen.res) === JSON.stringify(old));
+    t("…and the run then goes ahead", out.res.some(r => r.email === "new@c.com"));
+    const refused = ENG({ dates: D, acts: [act("Golf", 4)], fd, res: clone(old), onSnap: () => false, confirmOk: false }).run();
+    t("no backup and no file → the engine does not run", JSON.stringify(refused.res) === JSON.stringify(old) && /NOT RUN/.test(refused.log[0] || ""));
+  }
+  // 7. takeSnapshot on a full local storage.
+  {
+    const SNAP = new Function("LS", [
+      "let acts=[{n:'Golf'}],sa={},allocRes=[{email:'x@c.com',alloc:'Golf'}],allocOverrides={a1:{}},allocDateOverrides={},pupils=[],snapshots=[];",
+      "const localStorage=LS;const log=[];function logAction(a,d){log.push(a+': '+d);}",
+      grab("function takeSnapshot(label){", "\r\n}", "takeSnapshot"),
+      "return {take:takeSnapshot,get snaps(){return snapshots;},set snaps(v){snapshots=v;},log};"].join("\n"));
+    const quotaLS = limit => { const m = {}; return { getItem: k => (k in m ? m[k] : null), removeItem: k => { delete m[k]; }, _m: m,
+      setItem: (k, v) => { const rest = Object.keys(m).filter(x => x !== k).reduce((s, x) => s + m[x].length, 0);
+        if (rest + String(v).length > limit) { const e = new Error("quota"); e.name = "QuotaExceededError"; throw e; } m[k] = String(v); } }; };
+    let ls = quotaLS(1e9), S1 = SNAP(ls);
+    t("snapshot: saved when there is room", S1.take("Pre-run backup") === true && JSON.parse(ls.getItem("lex12-snapshots"))[0].label === "Pre-run backup");
+    const one = ls.getItem("lex12-snapshots").length;
+    ls = quotaLS(one * 3.5); const S2 = SNAP(ls);
+    S2.snaps = Array.from({ length: 9 }, (_, i) => ({ ts: "2026-09-0" + (i + 1), label: "older " + i, data: clone(S1.snaps[0].data) }));
+    t("snapshot: a full store drops the oldest to make room, and does not throw", S2.take("Pre-run backup") === true
+      && JSON.parse(ls.getItem("lex12-snapshots"))[0].label === "Pre-run backup" && S2.log.some(l => /dropped \d+ older/.test(l)), S2.log.join(" | "));
+    ls = quotaLS(10); const S3 = SNAP(ls);
+    t("snapshot: no room even for one → false (kept in memory), and does not throw", S3.take("Pre-run backup") === false
+      && S3.snaps[0].label === "Pre-run backup" && S3.log.some(l => /NOT saved/.test(l)));
+  }
+  t("the unreachable-cloud branch no longer loads local storage over the tab", !P0_UNREACHABLE.split("\r\n").filter(l => !l.trim().startsWith("//")).join("\n").includes("loadLocal("));
+  t("the Run button goes through the stale check", has('onClick:async()=>{if(!(await runAllocationChecked(false)))return; // v175'));
+  t("automatic re-runs go through it too", has("    if(!(await runAllocationChecked(true)))return; // v175"));
+  t("the engine is called from one place only: the checked runner", (src.match(/runAllocEngineV12\(\)/g) || []).length === 2
+    && grab("async function runAllocationChecked(auto){", "\r\n}", "runAllocationChecked").includes("  runAllocEngineV12();"));
+  t("the engine no longer takes its snapshot after the run", !grab("function runAllocEngineV12(){", "\r\n}\r\n", "runAllocEngineV12").includes('takeSnapshot("Pre-run backup")'));
+}
+
 // ── summary ──────────────────────────────────────────────────────────────────
 (async () => {
   try { await p0Tests(); }
   catch (e) { fail++; failures.push("v169 P0 → the simulation threw: " + e.message); console.log("  FAIL  the P0 simulation threw — " + (e.stack || e)); }
+  try { await p0v175Tests(); }
+  catch (e) { fail++; failures.push("v175 P0 → the simulation threw: " + e.message); console.log("  FAIL  the v175 P0 simulation threw — " + (e.stack || e)); }
   try { await blockTests(); }
   catch (e) { fail++; failures.push("v171 blocks → the tests threw: " + e.message); console.log("  FAIL  the block tests threw — " + (e.stack || e)); }
   try { blockUseTests(); }
