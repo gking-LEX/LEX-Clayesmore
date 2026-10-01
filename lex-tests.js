@@ -959,6 +959,7 @@ var ENG_SRC = [
   grab("function overrideWantsReason(half,email){", "\r\n}", "overrideWantsReason"),
   grab("function allocPriorHalves(fd,half,runRows,engMap){", "\r\n}", "allocPriorHalves"),
   grab("function _allocBeats(s,h,a){", "\r\n}", "_allocBeats"),
+  grab("function _preRunBackup(){", "\r\n}", "_preRunBackup"),
   grab("function runAllocEngineV12(){", "\r\n}\r\n", "runAllocEngineV12")
 ].join("\n");
 var ENG = (w) => new Function("W", `
@@ -972,7 +973,8 @@ var ENG = (w) => new Function("W", `
   function halfLabel(h){return h;}
   function autoLinkFormEmails(){return {linked:0,pending:0};}
   function logAction(a,d){actions.push(a+" "+d);}
-  function takeSnapshot(){} function saveAll(){} function invalidateCaches(){}
+  function takeSnapshot(l){return W.onSnap?W.onSnap(l,allocRes):undefined;} function saveAll(){} function invalidateCaches(){}
+  function confirm(){return !!W.confirmOk;} function toast(){}
   function autoRealloc(m){reruns.push(m);}
   ${ENG_SRC}
   return {run(){runAllocEngineV12();return {res:allocRes,log:allocLog,wl:waitingList};},
@@ -1281,13 +1283,28 @@ var P0_SRC = [
   grab("function _applyCloudBlob(k,got,seq0){", "\r\n}", "_applyCloudBlob"),
   grab("async function _writeBlobKey(k){", "\r\n}", "_writeBlobKey"),
   grab("async function _pushDirtyBlobs(){", "\r\n}", "_pushDirtyBlobs"),
-  grab("function markBlobsForOverwrite(keys){", "\r\n}", "markBlobsForOverwrite"),
+  grab("function markBlobsForOverwrite(keys,label){", "\r\n}", "markBlobsForOverwrite"),
+  grab("function _saveBlobForce(){", "\r\n}", "_saveBlobForce"),
+  grab("function _restorePending(){", "\r\n", "_restorePending"),
+  grab("function _updateRestoreBanner(){", "\r\n}", "_updateRestoreBanner"),
   grab("function _primeBlobBaseline(){", "\r\n}", "_primeBlobBaseline"),
   grab("function _noteDirtyBlobsNow(){", "\r\n}", "_noteDirtyBlobsNow"),
   grab("function _refreshFingerprintsAfterLoad(){", "\r\n}", "_refreshFingerprintsAfterLoad"),
   grab("function saveSupa(){", "\r\n}", "saveSupa"),
-  grab("function _flushOnUnload(){", "\r\n}", "_flushOnUnload")
+  grab("function _flushOnUnload(){", "\r\n}", "_flushOnUnload"),
+  grab("async function forceSaveNow(){", "\r\n}", "forceSaveNow"),
+  grab("const _ENGINE_INPUT_KEYS=[", "];", "_ENGINE_INPUT_KEYS"),
+  grab("async function _engineInputsStale(){", "\r\n}", "_engineInputsStale"),
+  grab("async function _adoptCloudStamps(){", "\r\n}", "_adoptCloudStamps"),
+  grab("async function _waitForSaveIdle(){", "\r\n", "_waitForSaveIdle"),
+  grab("async function forceSyncNow(){", "\r\n}", "forceSyncNow"),
+  // v176: the real local save (renamed: the harness's saveLocal is a no-op unless a test asks)
+  grab("function _lsSet(key,val){", "\r\n}", "_lsSet"),
+  grab("let _localSaveFailed=false;", "\r\n", "_localSaveFailed"),
+  grab("function saveLocal(){", "\r\n}", "saveLocal").replace("function saveLocal(){", "function _realSaveLocal(){")
 ].join("\n");
+// v175: the branch loadFromSupabase takes when every read fails (a laptop waking, Wi-Fi down).
+var P0_UNREACHABLE = grab("  if(!gotAny){", "\r\n  }", "loadFromSupabase unreachable branch");
 var mkClient = (server, ls, opts) => new Function("SERVER", "LS", "OPTS", `
   let acts=[],staff=[],pupils=[],dates=[],priorYTD={},allocOverrides={},allocHistory=[],formData=[],allocRes=[],venues=[],
       consentMap={},savedSubGroups={},notepadText="",designations=[],sa={},overviewData={},attendance={};
@@ -1297,7 +1314,8 @@ var mkClient = (server, ls, opts) => new Function("SERVER", "LS", "OPTS", `
   const conflicts=()=>_blobConflictLog;
   function isStaffView(){return !!OPTS.staff;} function isPublicTimetable(){return false;}
   function updateSyncBadge(){} async function saSyncPerRow(){return true;} async function _reconcileIfStale(){}
-  function _markSupaWrite(){} function _announceSaved(){} function invalidateCaches(){} function saveLocal(){}
+  function _markSupaWrite(){} function _announceSaved(){} function invalidateCaches(){} function saveLocal(){if(OPTS.realSave)_realSaveLocal();}
+  let activityLog=[],allocDateOverrides={};
   function _onAutoUpdateView(){return false;} function _safeAutoRerender(){return false;} function _scheduleSilentRerender(){}
   function _showRemoteUpdateBanner(){} function logAction(){} function _updateSaveGuardBanner(){} function toast(){} function autoSnapshot(){}
   const console={error(){},warn(){},log(){}};
@@ -1314,10 +1332,15 @@ var mkClient = (server, ls, opts) => new Function("SERVER", "LS", "OPTS", `
   }
   // What a reload does before the cloud answers: local storage is the baseline.
   function loadLocalOnly(values){Object.entries(values).forEach(([k,v])=>_setStateForKey(k,JSON.parse(JSON.stringify(v))));_primeBlobBaseline();}
-  return {load,loadLocalOnly,push:_pushDirtyBlobs,saveSupa,flush:_flushOnUnload,noteDirty:_noteDirtyBlobsNow,
+  // What the real loadLocal() does to the blob keys: this browser's local-storage copy replaces
+  // what the tab holds. Called only if the shipped branch below still calls it.
+  function loadLocal(){_BLOB_KEYS.forEach(k=>{const raw=localStorage.getItem("lex12-"+k);if(raw)_setStateForKey(k,JSON.parse(raw));});}
+  async function refreshUnreachable(){const gotAny=false;${P0_UNREACHABLE}}
+  return {load,loadLocalOnly,refreshUnreachable,engineStale:_engineInputsStale,adopt:_adoptCloudStamps,
+    forceSync:forceSyncNow,saveLocalNow:()=>saveLocal(),reloadFromLS(){loadLocal();_primeBlobBaseline();},restorePending:_restorePending,rawSet:(k,v)=>supaSet("lex12-"+k,v),push:_pushDirtyBlobs,saveSupa,flush:_flushOnUnload,noteDirty:_noteDirtyBlobsNow,
     markOverwrite:markBlobsForOverwrite,merge:_blobMerge,ABSENT:_ABSENT,conflicts,
     get acts(){return acts;},set acts(v){acts=v;},get ovr(){return allocOverrides;},set ovr(v){allocOverrides=v;},
-    get notepad(){return notepadText;},set notepad(v){notepadText=v;},
+    get notepad(){return notepadText;},set notepad(v){notepadText=v;},get consent(){return consentMap;},
     setPending(v){_hasPendingSupaWrite=v;},stamps:()=>_blobStamps,newStamp:_newStamp};`)(server, ls, opts || {});
 var mkLS = () => { const m = {}; return { getItem: k => (k in m ? m[k] : null), setItem: (k, v) => { m[k] = String(v); }, removeItem: k => { delete m[k]; }, _m: m }; };
 var ACTS0 = [{ id: "A1", n: "Golf", cap: 14, v: "Range", di: [0, 1], staff: ["JAR"] }, { id: "A2", n: "Chess", cap: 10, v: "Library", di: [0], staff: [] },
@@ -2189,10 +2212,365 @@ S("Structural integrity");
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// v175 — P0: 29–30 Sept. Between two backups the half-term overrides went from 70 to 17 (and lost
+// their reasons) and consent from 38 entries to 26, through v169's version check. The copy that
+// went up was this browser's local storage — full, so it had stopped taking the keys that grew —
+// loaded into a live tab whose version stamps still said "current". Invented data throughout.
+var mkOverrides = n => { const o = { a1: {}, a2: {}, _reason: { a2: {} } };
+  for (let i = 1; i <= n; i++) { o.a2["pupil" + i + "@c.com"] = i % 2 ? "Golf" : "Chess";
+    if (i > 17 && i % 3 === 0) o._reason.a2["pupil" + i + "@c.com"] = { to: o.a2["pupil" + i + "@c.com"], why: "clash" }; }
+  if (n <= 17) delete o._reason;                             // the old copy predates any reason
+  return o; };
+var mkConsent = n => { const c = {}; for (let i = 1; i <= n; i++) c["pupil" + i + "@c.com"] = { A1: true }; return c; };
+async function p0v175Tests() {
+  S("v175 — P0: an old local copy never reaches the cloud");
+  const O70 = mkOverrides(70), O17 = mkOverrides(17), C38 = mkConsent(38), C26 = mkConsent(26);
+  const nOvr = o => Object.keys((o && o.a2) || {}).length;
+  const nRsn = o => Object.keys(((o && o._reason) || {}).a2 || {}).length;
+  // 1. The incident: a refresh that finds the network down, then any save.
+  {
+    const srv = mkServer({ acts: ACTS0, allocoverrides: O70, consentmap: C38 });
+    const ls = mkLS();
+    const T = mkClient(srv, ls); await T.load();
+    // Local storage filled up days ago: the keys that grew since kept their old values.
+    ls.setItem("lex12-allocoverrides", JSON.stringify(O17)); ls.setItem("lex12-consentmap", JSON.stringify(C26));
+    await T.refreshUnreachable();
+    t("a refresh that cannot reach the cloud keeps what the tab holds", nOvr(T.ovr) === 70 && Object.keys(T.consent).length === 38, nOvr(T.ovr) + " overrides");
+    T.acts.find(a => a.id === "A1").cap = 15; await T.push();          // an unrelated save later
+    const o = srv.get("allocoverrides");
+    t("…and the next save leaves all 70 overrides in the cloud", nOvr(o) === 70, nOvr(o) + " in the cloud");
+    t("…with their reasons", nRsn(o) === nRsn(O70) && nRsn(o) > 0, nRsn(o) + " reasons");
+    t("…and all 38 consent entries", Object.keys(srv.get("consentmap")).length === 38, Object.keys(srv.get("consentmap")).length + " consent entries");
+    t("…while the edit that was made goes up", srv.get("acts").find(a => a.id === "A1").cap === 15);
+  }
+  // 2. A reload beside a full local storage: stamps say "current", data is old; edit before the cloud answers.
+  {
+    const srv = mkServer({ allocoverrides: O70, consentmap: C38 });
+    const ls = mkLS();
+    const T = mkClient(srv, ls); await T.load();                        // records the current versions
+    const R = mkClient(srv, ls); R.loadLocalOnly({ allocoverrides: O17, consentmap: C26 });
+    R.ovr.a2["newcomer@c.com"] = "Polo"; R.consent["newcomer@c.com"] = { A1: true };
+    await R.load(); await R.push();
+    const o = srv.get("allocoverrides");
+    t("reload with an old local copy: the edit is added to the cloud's 70, not written over them", nOvr(o) === 71 && o.a2["newcomer@c.com"] === "Polo", nOvr(o) + " in the cloud");
+    t("…reasons kept", nRsn(o) === nRsn(O70));
+    t("…consent: 38 kept plus the new one", Object.keys(srv.get("consentmap")).length === 39);
+    t("…and the tab now shows the cloud's overrides", nOvr(R.ovr) === 71);
+  }
+  // 3. The same, when the cloud load never lands before the save (focus on an input bails it).
+  {
+    const srv = mkServer({ allocoverrides: O70 });
+    const ls = mkLS();
+    const T = mkClient(srv, ls); await T.load();
+    const R = mkClient(srv, ls); R.loadLocalOnly({ allocoverrides: O17 });
+    R.ovr.a2["newcomer@c.com"] = "Polo"; await R.push();
+    t("save before the cloud load: the old copy is merged onto the cloud's, not written", nOvr(srv.get("allocoverrides")) === 71, nOvr(srv.get("allocoverrides")) + " in the cloud");
+  }
+  // 4. A reload whose local copy IS the version it recorded still writes straight through.
+  {
+    const srv = mkServer({ allocoverrides: O70 });
+    const ls = mkLS();
+    const T = mkClient(srv, ls); await T.load();
+    const R = mkClient(srv, ls); R.loadLocalOnly({ allocoverrides: O70 });
+    R.ovr.a2["newcomer@c.com"] = "Polo";
+    const b = srv.log.length; await R.push();
+    t("a reload with a matching local copy keeps its version: one write, no extra read",
+      srv.log.slice(b).join(";") === "PATCH lex12-allocoverrides" && nOvr(srv.get("allocoverrides")) === 71, srv.log.slice(b).join(";"));
+  }
+  // 5. The engine refuses to run on a copy another device has moved past.
+  {
+    const srv = mkServer({ allocoverrides: O70, formdata: [], acts: ACTS0, pupils: [], dates: [] });
+    let down = false;
+    const net = Object.assign({}, srv, { fetch: async (u, o) => { if (down) throw new TypeError("Failed to fetch"); return srv.fetch(u, o); } });
+    const A = mkClient(net, mkLS()), B = mkClient(srv, mkLS()); await A.load(); await B.load();
+    t("engine check: a current copy may run", JSON.stringify(await A.engineStale()) === "[]");
+    B.ovr.a2["late@c.com"] = "Golf"; await B.push();
+    t("engine check: overrides changed on another device → refused", JSON.stringify(await A.engineStale()) === '["allocoverrides"]');
+    await A.load();
+    t("engine check: after loading them, it may run", JSON.stringify(await A.engineStale()) === "[]");
+    A.ovr.a2["mine@c.com"] = "Polo"; A.setPending(true);
+    t("engine check: this copy's own unsaved edit is saved first, not taken for someone else's",
+      JSON.stringify(await A.engineStale()) === "[]" && srv.get("allocoverrides").a2["mine@c.com"] === "Polo");
+    const C = mkClient(srv, mkLS()); C.loadLocalOnly({ allocoverrides: O17 });
+    t("engine check: a copy whose version is unknown is not treated as current", (await C.engineStale()).includes("allocoverrides"));
+    down = true;
+    t("engine check: no network → 'could not check', not 'current'", (await A.engineStale()) === null);
+  }
+  // 5b. "Push local data to Supabase" (unconditional), then another copy writes before this tab
+  // records the cloud's versions: the tab must take that version, not pair its own copy with it.
+  {
+    const srv = mkServer({ allocoverrides: O70 });
+    const A = mkClient(srv, mkLS()), B = mkClient(srv, mkLS()); await A.load();
+    A.ovr.a2["pushed@c.com"] = "Golf"; await A.rawSet("allocoverrides", A.ovr);   // the push
+    await B.load(); B.ovr.a2["between@c.com"] = "Chess"; await B.push();        // lands in between
+    await A.adopt();
+    A.ovr.a2["after@c.com"] = "Polo"; await A.push();
+    const o = srv.get("allocoverrides");
+    t("after a push-all, a write that landed in between is not overwritten by the next save",
+      o.a2["between@c.com"] === "Chess" && o.a2["pushed@c.com"] === "Golf" && o.a2["after@c.com"] === "Polo" && nOvr(o) === 73, nOvr(o) + " in the cloud");
+  }
+  // 6. Every run leaves a pre-run backup, taken BEFORE the run.
+  {
+    const D = [{ full: "05/09/2026", half: "A1" }, { full: "12/09/2026", half: "A1" },
+               { full: "07/11/2026", half: "A2" }, { full: "14/11/2026", half: "A2" }];
+    const act = (n, cap) => ({ n, cap, di: [0, 1, 2, 3] });
+    const fd = [{ email: "new@c.com", timestamp: "01/09/2026 09:00:00", s1c1: "Golf", c1: "Golf", s1c2: "", s1c3: "", c2: "", c3: "", s2c1: "", s2c2: "", s2c3: "" }];
+    const old = [{ email: "old@c.com", half: "A1", alloc: "Chess", st: "1ST" }];
+    let seen = null;
+    const out = ENG({ dates: D, acts: [act("Golf", 4), act("Chess", 4)], fd, res: clone(old),
+      onSnap: (l, res) => { seen = { l, res: clone(res) }; } }).run();
+    t("the engine takes a 'Pre-run backup' on every run", seen && seen.l === "Pre-run backup");
+    t("…before the run: it holds the results being replaced", seen && JSON.stringify(seen.res) === JSON.stringify(old));
+    t("…and the run then goes ahead", out.res.some(r => r.email === "new@c.com"));
+    const refused = ENG({ dates: D, acts: [act("Golf", 4)], fd, res: clone(old), onSnap: () => false, confirmOk: false }).run();
+    t("no backup and no file → the engine does not run", JSON.stringify(refused.res) === JSON.stringify(old) && /NOT RUN/.test(refused.log[0] || ""));
+  }
+  // 7. takeSnapshot on a full local storage.
+  {
+    const SNAP = new Function("LS", [
+      "let acts=[{n:'Golf'}],sa={},allocRes=[{email:'x@c.com',alloc:'Golf'}],allocOverrides={a1:{}},allocDateOverrides={},pupils=[],snapshots=[];",
+      "const localStorage=LS;const log=[];function logAction(a,d){log.push(a+': '+d);}",
+      grab("function takeSnapshot(label){", "\r\n}", "takeSnapshot"),
+      "return {take:takeSnapshot,get snaps(){return snapshots;},set snaps(v){snapshots=v;},log};"].join("\n"));
+    const quotaLS = limit => { const m = {}; return { getItem: k => (k in m ? m[k] : null), removeItem: k => { delete m[k]; }, _m: m,
+      setItem: (k, v) => { const rest = Object.keys(m).filter(x => x !== k).reduce((s, x) => s + m[x].length, 0);
+        if (rest + String(v).length > limit) { const e = new Error("quota"); e.name = "QuotaExceededError"; throw e; } m[k] = String(v); } }; };
+    let ls = quotaLS(1e9), S1 = SNAP(ls);
+    t("snapshot: saved when there is room", S1.take("Pre-run backup") === true && JSON.parse(ls.getItem("lex12-snapshots"))[0].label === "Pre-run backup");
+    const one = ls.getItem("lex12-snapshots").length;
+    ls = quotaLS(one * 3.5); const S2 = SNAP(ls);
+    S2.snaps = Array.from({ length: 9 }, (_, i) => ({ ts: "2026-09-0" + (i + 1), label: "older " + i, data: clone(S1.snaps[0].data) }));
+    t("snapshot: a full store drops the oldest to make room, and does not throw", S2.take("Pre-run backup") === true
+      && JSON.parse(ls.getItem("lex12-snapshots"))[0].label === "Pre-run backup" && S2.log.some(l => /dropped \d+ older/.test(l)), S2.log.join(" | "));
+    ls = quotaLS(10); const S3 = SNAP(ls);
+    t("snapshot: no room even for one → false (kept in memory), and does not throw", S3.take("Pre-run backup") === false
+      && S3.snaps[0].label === "Pre-run backup" && S3.log.some(l => /NOT saved/.test(l)));
+  }
+  t("the unreachable-cloud branch no longer loads local storage over the tab", !P0_UNREACHABLE.split("\r\n").filter(l => !l.trim().startsWith("//")).join("\n").includes("loadLocal("));
+  t("the Run button goes through the stale check", has('onClick:async()=>{if(!(await runAllocationChecked(false)))return; // v175'));
+  t("automatic re-runs go through it too", has("    if(!(await runAllocationChecked(true)))return; // v175"));
+  t("the engine is called from one place only: the checked runner", (src.match(/runAllocEngineV12\(\)/g) || []).length === 2
+    && grab("async function runAllocationChecked(auto){", "\r\n}", "runAllocationChecked").includes("  runAllocEngineV12();"));
+  t("the engine no longer takes its snapshot after the run", !grab("function runAllocEngineV12(){", "\r\n}\r\n", "runAllocEngineV12").includes('takeSnapshot("Pre-run backup")'));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// v176 — Force sync, and a restore that has not reached the cloud yet. Invented data.
+async function p0v176Tests() {
+  S("v176 — Force sync pushes; a restore survives a reload until it is in the cloud");
+  const O70 = mkOverrides(70), O17 = mkOverrides(17);
+  const nOvr = o => Object.keys((o && o.a2) || {}).length;
+  // 1. Force sync writes this tab's changes, and later saves still work.
+  {
+    const srv = mkServer({ acts: ACTS0 });
+    const A = mkClient(srv, mkLS()); await A.load();
+    A.acts.find(a => a.id === "A1").cap = 30; A.setPending(true);
+    t("Force sync pushes this tab's changed keys", (await A.forceSync()) === true && srv.get("acts").find(a => a.id === "A1").cap === 30);
+    A.acts.find(a => a.id === "A2").cap = 7; await A.push();
+    t("…and a save after it still goes up", srv.get("acts").find(a => a.id === "A2").cap === 7);
+    t("Force sync no longer empties the last-synced fingerprints (only the declaration remains)", (src.match(/_lastSyncedFingerprints=\{\};/g) || []).length === 1 && has("let _lastSyncedFingerprints={};"));
+  }
+  // 2. Restore, then the tab reloads before the push lands: the restore goes up after the reload.
+  {
+    const srv = mkServer({ allocoverrides: O17, acts: ACTS0 });   // the damaged cloud
+    const ls = mkLS();
+    const A = mkClient(srv, ls, { realSave: true }); await A.load();
+    A.ovr = clone(O70); A.markOverwrite(["allocoverrides"], "backup file from 29 Sept"); A.saveLocalNow();   // restore; no push yet
+    t("restore: pending until it is in the cloud", JSON.stringify(A.restorePending()) === '["allocoverrides"]');
+    const A2 = mkClient(srv, ls, { realSave: true }); A2.reloadFromLS();
+    t("…still pending after a reload", JSON.stringify(A2.restorePending()) === '["allocoverrides"]');
+    await A2.load();
+    t("…the cloud load does not replace the restored data", nOvr(A2.ovr) === 70, nOvr(A2.ovr) + " held");
+    await A2.push();
+    t("…and the next save puts it in the cloud", nOvr(srv.get("allocoverrides")) === 70, nOvr(srv.get("allocoverrides")) + " in the cloud");
+    t("…after which nothing is pending, here or on the next reload", A2.restorePending().length === 0
+      && (() => { const A3 = mkClient(srv, ls, { realSave: true }); A3.reloadFromLS(); return A3.restorePending().length === 0; })());
+  }
+  // 3. …but not beside different data: another tab replaced this browser's copy before the reload.
+  {
+    const srv = mkServer({ allocoverrides: O17 });
+    const ls = mkLS();
+    const A = mkClient(srv, ls, { realSave: true }); await A.load();
+    A.ovr = clone(O70); A.markOverwrite(["allocoverrides"], "backup file from 29 Sept"); A.saveLocalNow();
+    ls.setItem("lex12-allocoverrides", JSON.stringify(mkOverrides(5)));      // another tab's copy
+    const A2 = mkClient(srv, ls, { realSave: true }); A2.reloadFromLS();
+    const before = srv.log.length; await A2.load(); await A2.push();
+    t("a stored restore beside different data is not used to overwrite the cloud", nOvr(srv.get("allocoverrides")) === 17
+      && !srv.log.slice(before).some(l => l.startsWith("PATCH")), srv.log.slice(before).join(";"));
+    t("…and the loss is reported, saying to restore again", A2.conflicts().some(c => /had not reached the cloud.*Restore it again/.test(c.what)));
+  }
+  // 4. A restore goes up even where it equals this tab's last-synced copy (the cloud moved meanwhile).
+  {
+    const srv = mkServer({ allocoverrides: O70 });
+    const A = mkClient(srv, mkLS()), B = mkClient(srv, mkLS()); await A.load(); await B.load();
+    ["pupil1@c.com", "pupil2@c.com", "pupil3@c.com"].forEach(e => delete B.ovr.a2[e]); await B.push();
+    A.ovr = clone(O70); A.markOverwrite(["allocoverrides"], "auto-snapshot"); await A.push();
+    t("a restore matching this tab's old copy still replaces the cloud's", nOvr(srv.get("allocoverrides")) === 70, nOvr(srv.get("allocoverrides")) + " in the cloud");
+    // The same with a refresh landing between the restore and its save.
+    const srv2 = mkServer({ allocoverrides: O70 });
+    const C = mkClient(srv2, mkLS()), D = mkClient(srv2, mkLS()); await C.load(); await D.load();
+    ["pupil1@c.com", "pupil2@c.com", "pupil3@c.com"].forEach(e => delete D.ovr.a2[e]); await D.push();
+    C.ovr = clone(O70); C.markOverwrite(["allocoverrides"], "auto-snapshot"); await C.load(); await C.push();
+    t("…even when a refresh lands before its save", nOvr(C.ovr) === 70 && nOvr(srv2.get("allocoverrides")) === 70, nOvr(srv2.get("allocoverrides")) + " in the cloud");
+  }
+  // 5. Keys the restore did not touch are not overwritten.
+  {
+    const srv = mkServer({ allocoverrides: O17, acts: ACTS0 });
+    const A = mkClient(srv, mkLS()), B = mkClient(srv, mkLS()); await A.load(); await B.load();
+    B.acts.find(a => a.id === "A3").n = "Canoeing"; await B.push();
+    A.ovr = clone(O70); A.markOverwrite(["allocoverrides"], "backup file"); await A.push();
+    t("restoring overrides leaves another device's newer activities alone", srv.get("acts").find(a => a.id === "A3").n === "Canoeing" && nOvr(srv.get("allocoverrides")) === 70);
+  }
+  // 6. A failed push leaves it pending; a later one clears it.
+  {
+    const srv = mkServer({ allocoverrides: O17 });
+    let down = false;
+    const net = Object.assign({}, srv, { fetch: async (u, o) => { if (down) throw new TypeError("Failed to fetch"); return srv.fetch(u, o); } });
+    const A = mkClient(net, mkLS()); await A.load();
+    A.ovr = clone(O70); A.markOverwrite(["allocoverrides"], "backup file"); down = true; await A.push();
+    t("restore: still pending after a failed push", A.restorePending().length === 1 && nOvr(srv.get("allocoverrides")) === 17);
+    down = false; await A.push();
+    t("…and cleared by the one that lands", A.restorePending().length === 0 && nOvr(srv.get("allocoverrides")) === 70);
+  }
+  t("the three restores each name the keys they restored", !has("markBlobsForOverwrite();") && (src.match(/markBlobsForOverwrite\(\[/g) || []).length === 3);
+  t("a restore waiting to go up is shown at startup and after each save and load",
+    has("try{_updateRestoreBanner();_showBlobConflicts();}catch(_){} // v176") && has("_showBlobConflicts();_updateRestoreBanner();\r\n  return {wrote,failed};"));
+  t("Sync Health stops showing sa as pending after a per-row save", has("if(allOk){_markSupaWrite();_lastSyncedFingerprints.sa=_saFp;}"));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// v177 — the shared activity log (lex_log). A stand-in for the table's REST endpoint: insert with
+// ignore-duplicates on the id, read with pfx/action filters, newest first. It can be "down", lose
+// the reply to a write it did store, or not exist yet. Invented names and addresses.
+var mkLogServer = () => {
+  const rows = new Map(), st = { missing: false, down: false, loseReply: false, posts: 0 };
+  const resp = (status, body) => ({ ok: status < 300, status, json: async () => body, text: async () => (typeof body === "string" ? body : JSON.stringify(body)) });
+  const fetch = async (url, opts) => {
+    opts = opts || {};
+    if (st.down) throw new TypeError("Failed to fetch");
+    if (st.missing) return resp(404, '{"code":"42P01","message":"relation \\"public.lex_log\\" does not exist"}');
+    const q = new URL(url).searchParams;
+    if ((opts.method || "GET") === "POST") {
+      st.posts++;
+      const body = JSON.parse(opts.body), prefer = (opts.headers || {}).Prefer || "";
+      if (!/ignore-duplicates/.test(prefer) && body.some(r => rows.has(r.id))) return resp(409, '{"code":"23505","message":"duplicate key value violates unique constraint"}');
+      body.forEach(r => { if (!rows.has(r.id)) rows.set(r.id, { ...r, logged_at: "2026-10-01T09:00:00+00:00" }); });
+      if (st.loseReply) { st.loseReply = false; throw new TypeError("Failed to fetch"); }
+      return resp(201, "");
+    }
+    let out = [...rows.values()].filter(r => "eq." + r.pfx === q.get("pfx"));
+    const a = q.get("action");
+    if (a && a.startsWith("in.(")) { const set = a.slice(4, -1).split(","); out = out.filter(r => set.includes(r.action)); }
+    if (a && a.startsWith("like.")) { const pre = a.slice(5).replace(/\*$/, ""); out = out.filter(r => r.action.startsWith(pre)); }
+    out.sort((x, y) => y.ts.localeCompare(x.ts));
+    return resp(200, out.slice(0, +q.get("limit") || 300));
+  };
+  return { fetch, rows, st };
+};
+var LOG_SRC = [
+  grab("function logAction(action,detail){", "\r\n}", "logAction"),
+  grab("let _logQueue=null;", "let _logTableState=null;", "shared log state"),
+  grab("function _logUuid(){", "\r\n}", "_logUuid"),
+  grab("function _deviceLabel(){", "\r\n}", "_deviceLabel"),
+  grab("function _logQueueSync(){", "\r\n}", "_logQueueSync"),
+  grab("function _sharedLog(action,detail,ts){", "\r\n}", "_sharedLog"),
+  grab("async function _flushSharedLog(){", "\r\n}", "_flushSharedLog"),
+  grab("async function sharedLogLoad(kind,limit){", "\r\n}", "sharedLogLoad")
+].join("\n");
+var mkLogClient = (srv, ls, o) => new Function("SRV", "LS", "O", `
+  let activityLog=[],_logUser="Gideon";const PFX=O.pfx||"lex12",CURRENT_VERSION="vTEST",_clientId=O.id||"cDEVICE0001";
+  const supaClient={url:"https://db.test",key:"k"};const fetch=SRV.fetch;const localStorage=LS;
+  const window={__LEX_USER__:O.user||{email:"head.of.lex@c.com",name:"Head of LEX"}};
+  const navigator={userAgent:O.ua||"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"};
+  function saveLocal(){} function isStaffView(){return !!O.staff;} function isPublicTimetable(){return false;}
+  const console={warn(){},error(){},log(){}};
+  ${LOG_SRC}
+  return {log:logAction,flush:_flushSharedLog,load:sharedLogLoad,device:_deviceLabel,
+    queue:()=>(_logQueueSync(),_logQueue.length),state:()=>_logTableState,get local(){return activityLog;}};`)(srv, ls, o || {});
+async function v177Tests() {
+  S("v177 — a shared activity log: who, which device, every device");
+  const settle = () => new Promise(r => setTimeout(r, 15));
+  const rowsOf = srv => [...srv.rows.values()];
+  {
+    const srv = mkLogServer(), A = mkLogClient(srv, mkLS());
+    A.log("ALLOCATION_RUN", "S1: 120 allocated"); await settle();
+    const r = rowsOf(srv)[0] || {};
+    t("an admin action reaches the shared log", srv.rows.size === 1 && r.action === "ALLOCATION_RUN" && r.detail === "S1: 120 allocated");
+    t("…naming the signed-in user", r.user_email === "head.of.lex@c.com" && r.user_name === "Head of LEX");
+    t("…and the device", r.device_id === "cDEVICE0001" && r.device === "Chrome on Windows" && r.pfx === "lex12" && r.app_version === "vTEST");
+    t("…and stays in this browser's own log too", A.local.length === 1 && A.local[0].action === "ALLOCATION_RUN");
+    const S = mkLogClient(srv, mkLS(), { staff: true }); S.log("ATTENDANCE", "register"); await settle();
+    t("the staff portal does not write to the shared log", srv.rows.size === 1);
+  }
+  {
+    const srv = mkLogServer(), A = mkLogClient(srv, mkLS());
+    srv.st.down = true; A.log("OVERRIDE", "a → b"); A.log("RESTORE", "backup file"); await settle();
+    t("offline: entries wait in the queue", A.queue() === 2 && srv.rows.size === 0);
+    srv.st.down = false; await A.flush();
+    t("…and go up when the cloud answers", srv.rows.size === 2 && A.queue() === 0);
+    srv.st.loseReply = true; A.log("SNAPSHOT", "Pre-run backup"); await settle();
+    t("a write whose reply was lost stays queued", A.queue() === 1);
+    await A.flush();
+    t("…and its retry does not duplicate it", srv.rows.size === 3 && A.queue() === 0 && srv.st.posts >= 2);
+    srv.st.missing = true; A.log("RESTORE_SAVED", "x"); await settle();
+    t("no table yet: says so and keeps the entry", A.state() === "missing" && A.queue() === 1);
+    srv.st.missing = false; await A.flush();
+    t("…which goes up once the table exists", srv.rows.size === 4 && A.queue() === 0 && A.state() === "ok");
+  }
+  {
+    const srv = mkLogServer(), ls = mkLS();
+    const A = mkLogClient(srv, ls, { id: "cTABA" }), B = mkLogClient(srv, ls, { id: "cTABB" });
+    srv.st.down = true; A.log("OVERRIDE", "from tab A"); B.log("OVERRIDE", "from tab B"); await settle();
+    t("two tabs of one browser: neither's queued entry is lost", A.queue() === 2 && B.queue() === 2);
+    srv.st.down = false; await A.flush(); await B.flush();
+    t("…both go up, once each", srv.rows.size === 2 && A.queue() === 0 && B.queue() === 0
+      && rowsOf(srv).map(r => r.device_id).sort().join() === "cTABA,cTABB");
+  }
+  {
+    const L = ua => mkLogClient(mkLogServer(), mkLS(), { ua }).device();
+    t("device: iPad", L("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1") === "Safari on iPad");
+    t("device: Android phone", L("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36") === "Chrome on Android");
+    t("device: Edge on Windows", L("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36 Edg/140.0") === "Edge on Windows");
+    t("device: Safari on a Mac", L("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 Version/17.5 Safari/605.1.15") === "Safari on Mac");
+  }
+  {
+    const srv = mkLogServer(), A = mkLogClient(srv, mkLS());
+    A.log("OVERRIDE", "first"); await settle(); await new Promise(r => setTimeout(r, 5));
+    A.log("ALLOCATION_RUN", "second"); await settle(); await new Promise(r => setTimeout(r, 5));
+    A.log("RESTORE", "third"); await settle();
+    srv.rows.set("other-year", { id: "other-year", pfx: "lex11", ts: "2027-01-01T00:00:00Z", action: "RESTORE", detail: "last year" });
+    const all = await A.load("all"), ovr = await A.load("overrides"), runs = await A.load("runs");
+    t("reading: newest first, this year's system only", all.rows.map(r => r.detail).join() === "third,second,first");
+    t("reading: filter to override changes", ovr.rows.length === 1 && ovr.rows[0].action === "OVERRIDE");
+    t("reading: filter to allocation runs", runs.rows.length === 1 && runs.rows[0].action === "ALLOCATION_RUN");
+    srv.st.missing = true;
+    t("reading with no table: says it is missing", (await A.load("all")).error === "missing");
+  }
+  {
+    const D = [{ full: "05/09/2026", half: "A1" }, { full: "12/09/2026", half: "A1" }, { full: "07/11/2026", half: "A2" }, { full: "14/11/2026", half: "A2" }];
+    const fd = [{ email: "new@c.com", timestamp: "01/09/2026 09:00:00", s1c1: "Golf", c1: "Golf", s1c2: "", s1c3: "", c2: "", c3: "", s2c1: "", s2c2: "", s2c3: "" }];
+    const E = ENG({ dates: D, acts: [{ n: "Golf", cap: 4, di: [0, 1, 2, 3] }], fd,
+      ao: { a1: { "x@c.com": "Golf", "y@c.com": "Golf" }, a2: { "x@c.com": "Golf" }, _reason: { a1: { "x@c.com": { to: "Golf", why: "clash" } } } } });
+    E.run();
+    t("an allocation run records how many overrides and responses it used", E.actions.some(a => a.startsWith("ALLOCATION_RUN") && a.includes("using 3 half-term overrides and 1 form responses")), E.actions.join(" | "));
+  }
+  t("the log table is insert and read only", /for insert to anon, authenticated/.test(grab("const LOG_SETUP_SQL=", "`;", "LOG_SETUP_SQL"))
+    && !/for (update|delete|all)/.test(grab("const LOG_SETUP_SQL=", "`;", "LOG_SETUP_SQL")));
+  t("queued entries go up on every cloud load", has("  try{_flushSharedLog();}catch(_){} // v177"));
+  t("the Activity Log screen shows the shared log", has("_renderSharedLog(sharedBox); // v177"));
+}
+
 // ── summary ──────────────────────────────────────────────────────────────────
 (async () => {
   try { await p0Tests(); }
   catch (e) { fail++; failures.push("v169 P0 → the simulation threw: " + e.message); console.log("  FAIL  the P0 simulation threw — " + (e.stack || e)); }
+  try { await p0v175Tests(); }
+  catch (e) { fail++; failures.push("v175 P0 → the simulation threw: " + e.message); console.log("  FAIL  the v175 P0 simulation threw — " + (e.stack || e)); }
+  try { await p0v176Tests(); }
+  catch (e) { fail++; failures.push("v176 → the tests threw: " + e.message); console.log("  FAIL  the v176 tests threw — " + (e.stack || e)); }
+  try { await v177Tests(); }
+  catch (e) { fail++; failures.push("v177 → the tests threw: " + e.message); console.log("  FAIL  the v177 tests threw — " + (e.stack || e)); }
   try { await blockTests(); }
   catch (e) { fail++; failures.push("v171 blocks → the tests threw: " + e.message); console.log("  FAIL  the block tests threw — " + (e.stack || e)); }
   try { blockUseTests(); }
