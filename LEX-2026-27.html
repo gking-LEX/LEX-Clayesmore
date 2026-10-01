@@ -965,7 +965,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v176';
+const CURRENT_VERSION = 'v177';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -1900,9 +1900,153 @@ function getAllDesignations(){
 // Activity log — append timestamped entries, keep last 500
 let _logUser="Admin";
 function logAction(action,detail){
-  activityLog.push({ts:new Date().toISOString(),user:_logUser,action,detail:detail||""});
+  const ts=new Date().toISOString();
+  activityLog.push({ts,user:_logUser,action,detail:detail||""});
   if(activityLog.length>500)activityLog=activityLog.slice(-500);
-  saveLocal(); // log saved locally only (not Supabase on every keystroke)
+  saveLocal(); // this browser's own copy
+  try{_sharedLog(action,detail||"",ts);}catch(e){console.warn("shared log",e);} // v177
+}
+// ── v177: the shared activity log (lex_log) ─────────────────────────────────────────────────
+// The log above lives in one browser's local storage. After the 30 Sept overwrite nothing showed
+// which person or device had run the allocation that replaced the results, and a backup's log is
+// only the log of whichever browser made it. Every admin action now also goes to lex_log: one row
+// per entry, insert and read only (no update or delete through the API), with the signed-in user,
+// the device and the app version. Entries wait in a local queue and go up in batches, so one made
+// offline is sent later; each carries its own id, so a retry can never duplicate it.
+const LOG_SETUP_SQL=`-- LEX shared activity log (v177). Run once in the Supabase SQL editor for this project.
+create table if not exists public.lex_log (
+  id uuid primary key,
+  pfx text not null,
+  ts timestamptz not null,                      -- when it happened, by the device's clock
+  logged_at timestamptz not null default now(), -- when the cloud received it
+  action text not null check (char_length(action) <= 60),
+  detail text check (detail is null or char_length(detail) <= 2000),
+  user_email text,
+  user_name text,
+  device_id text,
+  device text,
+  app_version text
+);
+create index if not exists lex_log_pfx_ts on public.lex_log (pfx, ts desc);
+alter table public.lex_log enable row level security;
+-- Insert and read only. No update or delete policy: entries can't be changed or removed via the API.
+drop policy if exists "lex_log insert" on public.lex_log;
+create policy "lex_log insert" on public.lex_log for insert to anon, authenticated with check (true);
+drop policy if exists "lex_log read" on public.lex_log;
+create policy "lex_log read" on public.lex_log for select to anon, authenticated using (true);
+grant select, insert on public.lex_log to anon, authenticated;`;
+let _logQueue=null;        // entries not yet confirmed by the cloud (also in local storage, shared by tabs)
+let _logSent=new Set();    // ids this tab has had confirmed, so another tab's stored copy can't re-add them
+let _logFlushing=false;
+let _logTableState=null;   // null = not tried; "ok"; "missing"; "unreachable"; or an HTTP error
+function _logUuid(){
+  try{if(typeof crypto!=="undefined"&&crypto.randomUUID)return crypto.randomUUID();}catch(_){}
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g,c=>{const r=Math.random()*16|0;return (c==="x"?r:(r&3|8)).toString(16);});
+}
+// "Chrome on Windows" — enough to tell a laptop from a phone; device_id tells two laptops apart.
+function _deviceLabel(){
+  const ua=(typeof navigator!=="undefined"&&navigator.userAgent)||"";
+  const os=/iPad/.test(ua)?"iPad":/iPhone/.test(ua)?"iPhone":/Android/.test(ua)?"Android":/CrOS/.test(ua)?"Chromebook":
+    /Windows/.test(ua)?"Windows":/Macintosh|Mac OS X/.test(ua)?"Mac":/Linux/.test(ua)?"Linux":"unknown device";
+  const br=/Edg\//.test(ua)?"Edge":/OPR\//.test(ua)?"Opera":/Firefox\//.test(ua)?"Firefox":/Chrome\//.test(ua)?"Chrome":/Safari\//.test(ua)?"Safari":"a browser";
+  return br+" on "+os;
+}
+// Merge this tab's queue with the stored one (other tabs of this browser queue into it too), then store it.
+function _logQueueSync(){
+  if(_logQueue===null)_logQueue=[];
+  let stored=[];try{stored=JSON.parse(localStorage.getItem("lex12-logqueue")||"[]")||[];}catch(_){stored=[];}
+  const have=new Set(_logQueue.map(e=>e.id));
+  stored.forEach(e=>{if(e&&e.id&&!have.has(e.id)&&!_logSent.has(e.id)){_logQueue.push(e);have.add(e.id);}});
+  _logQueue.sort((a,b)=>String(a.ts).localeCompare(String(b.ts)));
+  if(_logQueue.length>1000)_logQueue.splice(0,_logQueue.length-1000);
+  try{localStorage.setItem("lex12-logqueue",JSON.stringify(_logQueue));}catch(_){}
+}
+function _sharedLog(action,detail,ts){
+  if(isStaffView()||isPublicTimetable())return;   // registers and the pupil view stay local
+  const u=(typeof window!=="undefined"&&window.__LEX_USER__)||{};
+  _logQueueSync();
+  _logQueue.push({id:_logUuid(),pfx:PFX,ts,action:String(action).slice(0,60),detail:String(detail||"").slice(0,2000),
+    user_email:u.email||"",user_name:u.name||_logUser||"",device_id:_clientId,device:_deviceLabel(),app_version:CURRENT_VERSION});
+  _logQueueSync();
+  _flushSharedLog();
+}
+async function _flushSharedLog(){
+  if(_logFlushing||!supaClient)return;
+  _logQueueSync();
+  if(!_logQueue.length)return;
+  _logFlushing=true;
+  try{
+    while(_logQueue.length){
+      const batch=_logQueue.slice(0,200);
+      const res=await fetch(`${supaClient.url}/rest/v1/lex_log`,{method:"POST",
+        headers:{"apikey":supaClient.key,"Authorization":"Bearer "+supaClient.key,"Content-Type":"application/json","Prefer":"resolution=ignore-duplicates,return=minimal"},
+        body:JSON.stringify(batch)});
+      if(!res.ok){
+        const t=await res.text().catch(()=>"");
+        _logTableState=(res.status===404||/42P01|does not exist|schema cache/i.test(t))?"missing":"HTTP "+res.status+" "+t.slice(0,120);
+        break;
+      }
+      _logTableState="ok";
+      const sent=new Set(batch.map(e=>e.id));sent.forEach(id=>_logSent.add(id));
+      _logQueue=_logQueue.filter(e=>!sent.has(e.id));
+      _logQueueSync();
+    }
+  }catch(e){_logTableState="unreachable";}
+  finally{_logFlushing=false;}
+}
+// The newest entries for this year's system. kind: all | runs | restores | overrides | sync.
+async function sharedLogLoad(kind,limit){
+  if(!supaClient)return {error:"No cloud connection."};
+  const f={runs:"&action=in.(ALLOCATION_RUN,ALLOCATION_NOT_RUN,SNAPSHOT)",restores:"&action=in.(RESTORE,RESTORE_SAVED,RESTORE_LOST,BACKUP)",
+    overrides:"&action=like.OVERRIDE*",sync:"&action=in.(SYNC_CONFLICT,RESTORE_LOST)"}[kind]||"";
+  try{
+    const res=await fetch(`${supaClient.url}/rest/v1/lex_log?select=ts,logged_at,action,detail,user_email,user_name,device_id,device,app_version&pfx=eq.${encodeURIComponent(PFX)}${f}&order=ts.desc&limit=${limit||300}`,
+      {headers:{"apikey":supaClient.key,"Authorization":"Bearer "+supaClient.key,"Accept":"application/json"}});
+    if(!res.ok){const t=await res.text().catch(()=>"");return {error:(res.status===404||/42P01|does not exist|schema cache/i.test(t))?"missing":"HTTP "+res.status+" "+t.slice(0,160)};}
+    const rows=await res.json();return Array.isArray(rows)?{rows}:{error:"unexpected reply"};
+  }catch(e){return {error:"unreachable"};}
+}
+function _renderSharedLog(box){
+  box.innerHTML="";
+  box.appendChild(h("div",{style:{fontWeight:700,fontSize:"13px",marginBottom:"4px"}},"🌐 Shared log — every device"));
+  box.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text2)",lineHeight:"1.6",marginBottom:"8px"}},
+    "Every admin action on any device, with who was signed in and which device it was. Allocation runs show how many half-term overrides they used."));
+  const kind=window._sharedLogKind||"all";
+  const sel=h("select",{style:{width:"auto"},onChange:e=>{window._sharedLogKind=e.target.value;_renderSharedLog(box);}},
+    ...[["all","Everything"],["runs","Allocation runs"],["restores","Restores and backups"],["overrides","Override changes"],["sync","Sync problems"]]
+      .map(([v,l])=>h("option",{value:v,selected:v===kind},l)));
+  const q=(_logQueueSync(),_logQueue.length);
+  box.appendChild(h("div",{className:"flex",style:{gap:"8px",alignItems:"center",marginBottom:"8px",flexWrap:"wrap"}},sel,
+    h("button",{className:"btn btn-ghost btn-sm",onClick:async()=>{await _flushSharedLog();_renderSharedLog(box);}},"Refresh"),
+    q?h("span",{style:{fontSize:"11px",color:"var(--amber)"}},q+" entr"+(q===1?"y":"ies")+" from this device waiting to upload"):null));
+  const body=h("div",{style:{fontSize:"12px",color:"var(--text3)"}},"Loading…");box.appendChild(body);
+  const sq=h("details",{style:{marginTop:"10px",fontSize:"12px"}});
+  sq.appendChild(h("summary",{style:{cursor:"pointer",fontWeight:600}},"Database setup (one-time)"));
+  sq.appendChild(h("p",{style:{fontSize:"11px",color:"var(--text2)",lineHeight:"1.6",margin:"6px 0"}},"The shared log needs a table called lex_log. Run this once in the Supabase SQL editor for this project, then press Refresh. Entries made before then wait on each device and go up once it exists."));
+  sq.appendChild(h("pre",{style:{background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:"6px",padding:"8px",fontSize:"10px",overflowX:"auto",whiteSpace:"pre"}},LOG_SETUP_SQL));
+  sq.appendChild(h("button",{className:"btn btn-ghost btn-sm",onClick:()=>{navigator.clipboard.writeText(LOG_SETUP_SQL).then(()=>toast("SQL copied"));}},"Copy SQL"));
+  box.appendChild(sq);
+  sharedLogLoad(kind).then(r=>{
+    body.innerHTML="";
+    if(r.error){
+      body.appendChild(h("div",{className:"alert "+(r.error==="missing"?"alert-warn":"alert-error")},r.error==="missing"
+        ?"The lex_log table doesn't exist yet — run the setup SQL below. Until then entries wait on each device."
+        :"Couldn't read the shared log: "+r.error));
+      if(r.error==="missing")sq.open=true;
+      return;
+    }
+    if(!r.rows.length){body.appendChild(h("div",{className:"alert alert-info"},"No entries yet."));return;}
+    const tw=h("div",{style:{maxHeight:"360px",overflow:"auto"}});const t=h("table",{className:"tbl"});
+    t.appendChild(h("thead",null,h("tr",null,...["When","Who","Device","Action","Detail"].map(x=>h("th",null,x)))));
+    const tb=h("tbody");
+    r.rows.forEach(e=>tb.appendChild(h("tr",null,
+      h("td",{style:{whiteSpace:"nowrap",fontSize:"11px"},title:"Received "+new Date(e.logged_at).toLocaleString("en-GB")},new Date(e.ts).toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit",second:"2-digit"})),
+      h("td",{style:{fontSize:"11px"},title:e.user_email||""},e.user_name||e.user_email||"?"),
+      h("td",{style:{fontSize:"11px"},title:"Device id "+(e.device_id||"?")+" · "+(e.app_version||"")},(e.device||"?")+" · "+String(e.device_id||"").slice(-4)),
+      h("td",{style:{fontSize:"11px",fontWeight:600}},e.action),
+      h("td",{style:{fontSize:"11px",color:"var(--text2)",maxWidth:"320px",whiteSpace:"normal"}},e.detail||""))));
+    t.appendChild(tb);tw.appendChild(t);body.appendChild(tw);
+  });
 }
 
 // Snapshots — save named restore point, keep last 10
@@ -3256,6 +3400,7 @@ async function loadFromSupabase(){
   try{_saLastSeen=await tableSummary("lex_sa");}catch(_){} // Wave 1b: keep poll baseline fresh
   if(blobMaxStamp!==null)_blobLastSeen=blobMaxStamp;
   try{await blocksLoad();}catch(_){} // v172: set lists, for every view (kept on a failed read)
+  try{_flushSharedLog();}catch(_){} // v177: entries queued while offline
   syncStatus="online";lastSyncTime=new Date();
   // v66: retry any per-row override deletes that never confirmed.
   drainPendingOvrDeletes();
@@ -9141,7 +9286,9 @@ function runAllocEngineV12(){
   allocLog=log;
   const s1tot=allRes.filter(r=>r.half===_h1()&&r.alloc).length;
   const s2tot=allRes.filter(r=>r.half===_h2()&&r.alloc).length;
-  logAction("ALLOCATION_RUN","S1: "+s1tot+" allocated, S2: "+s2tot+" allocated");
+  // v177: with how many half-term overrides it ran — a run on a short copy stands out in the shared log.
+  const _ovrUsed=Object.keys(allocOverrides).filter(k=>k!=="_reason").reduce((n,k)=>n+Object.keys(allocOverrides[k]||{}).length,0);
+  logAction("ALLOCATION_RUN","S1: "+s1tot+" allocated, S2: "+s2tot+" allocated; using "+_ovrUsed+" half-term overrides and "+formData.length+" form responses");
   saveAll();
 }
 
@@ -18161,7 +18308,8 @@ function renderAdminWeighting(el){
 
 function renderAdminLog(el){
   el.appendChild(h("div",{style:{fontWeight:700,fontSize:"14px",marginBottom:"4px"}},"📋 Activity Log"));
-  el.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text3)",marginBottom:"16px",lineHeight:"1.6"}},"Timestamped record of key actions. Saved locally. Last 500 entries retained."));
+  el.appendChild(h("p",{style:{fontSize:"12px",color:"var(--text3)",marginBottom:"16px",lineHeight:"1.6"}},"Timestamped record of key actions. The shared log below covers every device; this browser's own log (further down) is kept here only, last 500 entries."));
+  const sharedBox=h("div",{className:"card card-pad mb-16"});el.appendChild(sharedBox);_renderSharedLog(sharedBox); // v177
 
   // User name setting
   const userRow=h("div",{className:"flex mb-16",style:{gap:"8px",alignItems:"center"}});

@@ -2439,6 +2439,128 @@ async function p0v176Tests() {
   t("Sync Health stops showing sa as pending after a per-row save", has("if(allOk){_markSupaWrite();_lastSyncedFingerprints.sa=_saFp;}"));
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// v177 — the shared activity log (lex_log). A stand-in for the table's REST endpoint: insert with
+// ignore-duplicates on the id, read with pfx/action filters, newest first. It can be "down", lose
+// the reply to a write it did store, or not exist yet. Invented names and addresses.
+var mkLogServer = () => {
+  const rows = new Map(), st = { missing: false, down: false, loseReply: false, posts: 0 };
+  const resp = (status, body) => ({ ok: status < 300, status, json: async () => body, text: async () => (typeof body === "string" ? body : JSON.stringify(body)) });
+  const fetch = async (url, opts) => {
+    opts = opts || {};
+    if (st.down) throw new TypeError("Failed to fetch");
+    if (st.missing) return resp(404, '{"code":"42P01","message":"relation \\"public.lex_log\\" does not exist"}');
+    const q = new URL(url).searchParams;
+    if ((opts.method || "GET") === "POST") {
+      st.posts++;
+      const body = JSON.parse(opts.body), prefer = (opts.headers || {}).Prefer || "";
+      if (!/ignore-duplicates/.test(prefer) && body.some(r => rows.has(r.id))) return resp(409, '{"code":"23505","message":"duplicate key value violates unique constraint"}');
+      body.forEach(r => { if (!rows.has(r.id)) rows.set(r.id, { ...r, logged_at: "2026-10-01T09:00:00+00:00" }); });
+      if (st.loseReply) { st.loseReply = false; throw new TypeError("Failed to fetch"); }
+      return resp(201, "");
+    }
+    let out = [...rows.values()].filter(r => "eq." + r.pfx === q.get("pfx"));
+    const a = q.get("action");
+    if (a && a.startsWith("in.(")) { const set = a.slice(4, -1).split(","); out = out.filter(r => set.includes(r.action)); }
+    if (a && a.startsWith("like.")) { const pre = a.slice(5).replace(/\*$/, ""); out = out.filter(r => r.action.startsWith(pre)); }
+    out.sort((x, y) => y.ts.localeCompare(x.ts));
+    return resp(200, out.slice(0, +q.get("limit") || 300));
+  };
+  return { fetch, rows, st };
+};
+var LOG_SRC = [
+  grab("function logAction(action,detail){", "\r\n}", "logAction"),
+  grab("let _logQueue=null;", "let _logTableState=null;", "shared log state"),
+  grab("function _logUuid(){", "\r\n}", "_logUuid"),
+  grab("function _deviceLabel(){", "\r\n}", "_deviceLabel"),
+  grab("function _logQueueSync(){", "\r\n}", "_logQueueSync"),
+  grab("function _sharedLog(action,detail,ts){", "\r\n}", "_sharedLog"),
+  grab("async function _flushSharedLog(){", "\r\n}", "_flushSharedLog"),
+  grab("async function sharedLogLoad(kind,limit){", "\r\n}", "sharedLogLoad")
+].join("\n");
+var mkLogClient = (srv, ls, o) => new Function("SRV", "LS", "O", `
+  let activityLog=[],_logUser="Gideon";const PFX=O.pfx||"lex12",CURRENT_VERSION="vTEST",_clientId=O.id||"cDEVICE0001";
+  const supaClient={url:"https://db.test",key:"k"};const fetch=SRV.fetch;const localStorage=LS;
+  const window={__LEX_USER__:O.user||{email:"head.of.lex@c.com",name:"Head of LEX"}};
+  const navigator={userAgent:O.ua||"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"};
+  function saveLocal(){} function isStaffView(){return !!O.staff;} function isPublicTimetable(){return false;}
+  const console={warn(){},error(){},log(){}};
+  ${LOG_SRC}
+  return {log:logAction,flush:_flushSharedLog,load:sharedLogLoad,device:_deviceLabel,
+    queue:()=>(_logQueueSync(),_logQueue.length),state:()=>_logTableState,get local(){return activityLog;}};`)(srv, ls, o || {});
+async function v177Tests() {
+  S("v177 — a shared activity log: who, which device, every device");
+  const settle = () => new Promise(r => setTimeout(r, 15));
+  const rowsOf = srv => [...srv.rows.values()];
+  {
+    const srv = mkLogServer(), A = mkLogClient(srv, mkLS());
+    A.log("ALLOCATION_RUN", "S1: 120 allocated"); await settle();
+    const r = rowsOf(srv)[0] || {};
+    t("an admin action reaches the shared log", srv.rows.size === 1 && r.action === "ALLOCATION_RUN" && r.detail === "S1: 120 allocated");
+    t("…naming the signed-in user", r.user_email === "head.of.lex@c.com" && r.user_name === "Head of LEX");
+    t("…and the device", r.device_id === "cDEVICE0001" && r.device === "Chrome on Windows" && r.pfx === "lex12" && r.app_version === "vTEST");
+    t("…and stays in this browser's own log too", A.local.length === 1 && A.local[0].action === "ALLOCATION_RUN");
+    const S = mkLogClient(srv, mkLS(), { staff: true }); S.log("ATTENDANCE", "register"); await settle();
+    t("the staff portal does not write to the shared log", srv.rows.size === 1);
+  }
+  {
+    const srv = mkLogServer(), A = mkLogClient(srv, mkLS());
+    srv.st.down = true; A.log("OVERRIDE", "a → b"); A.log("RESTORE", "backup file"); await settle();
+    t("offline: entries wait in the queue", A.queue() === 2 && srv.rows.size === 0);
+    srv.st.down = false; await A.flush();
+    t("…and go up when the cloud answers", srv.rows.size === 2 && A.queue() === 0);
+    srv.st.loseReply = true; A.log("SNAPSHOT", "Pre-run backup"); await settle();
+    t("a write whose reply was lost stays queued", A.queue() === 1);
+    await A.flush();
+    t("…and its retry does not duplicate it", srv.rows.size === 3 && A.queue() === 0 && srv.st.posts >= 2);
+    srv.st.missing = true; A.log("RESTORE_SAVED", "x"); await settle();
+    t("no table yet: says so and keeps the entry", A.state() === "missing" && A.queue() === 1);
+    srv.st.missing = false; await A.flush();
+    t("…which goes up once the table exists", srv.rows.size === 4 && A.queue() === 0 && A.state() === "ok");
+  }
+  {
+    const srv = mkLogServer(), ls = mkLS();
+    const A = mkLogClient(srv, ls, { id: "cTABA" }), B = mkLogClient(srv, ls, { id: "cTABB" });
+    srv.st.down = true; A.log("OVERRIDE", "from tab A"); B.log("OVERRIDE", "from tab B"); await settle();
+    t("two tabs of one browser: neither's queued entry is lost", A.queue() === 2 && B.queue() === 2);
+    srv.st.down = false; await A.flush(); await B.flush();
+    t("…both go up, once each", srv.rows.size === 2 && A.queue() === 0 && B.queue() === 0
+      && rowsOf(srv).map(r => r.device_id).sort().join() === "cTABA,cTABB");
+  }
+  {
+    const L = ua => mkLogClient(mkLogServer(), mkLS(), { ua }).device();
+    t("device: iPad", L("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1") === "Safari on iPad");
+    t("device: Android phone", L("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36") === "Chrome on Android");
+    t("device: Edge on Windows", L("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36 Edg/140.0") === "Edge on Windows");
+    t("device: Safari on a Mac", L("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 Version/17.5 Safari/605.1.15") === "Safari on Mac");
+  }
+  {
+    const srv = mkLogServer(), A = mkLogClient(srv, mkLS());
+    A.log("OVERRIDE", "first"); await settle(); await new Promise(r => setTimeout(r, 5));
+    A.log("ALLOCATION_RUN", "second"); await settle(); await new Promise(r => setTimeout(r, 5));
+    A.log("RESTORE", "third"); await settle();
+    srv.rows.set("other-year", { id: "other-year", pfx: "lex11", ts: "2027-01-01T00:00:00Z", action: "RESTORE", detail: "last year" });
+    const all = await A.load("all"), ovr = await A.load("overrides"), runs = await A.load("runs");
+    t("reading: newest first, this year's system only", all.rows.map(r => r.detail).join() === "third,second,first");
+    t("reading: filter to override changes", ovr.rows.length === 1 && ovr.rows[0].action === "OVERRIDE");
+    t("reading: filter to allocation runs", runs.rows.length === 1 && runs.rows[0].action === "ALLOCATION_RUN");
+    srv.st.missing = true;
+    t("reading with no table: says it is missing", (await A.load("all")).error === "missing");
+  }
+  {
+    const D = [{ full: "05/09/2026", half: "A1" }, { full: "12/09/2026", half: "A1" }, { full: "07/11/2026", half: "A2" }, { full: "14/11/2026", half: "A2" }];
+    const fd = [{ email: "new@c.com", timestamp: "01/09/2026 09:00:00", s1c1: "Golf", c1: "Golf", s1c2: "", s1c3: "", c2: "", c3: "", s2c1: "", s2c2: "", s2c3: "" }];
+    const E = ENG({ dates: D, acts: [{ n: "Golf", cap: 4, di: [0, 1, 2, 3] }], fd,
+      ao: { a1: { "x@c.com": "Golf", "y@c.com": "Golf" }, a2: { "x@c.com": "Golf" }, _reason: { a1: { "x@c.com": { to: "Golf", why: "clash" } } } } });
+    E.run();
+    t("an allocation run records how many overrides and responses it used", E.actions.some(a => a.startsWith("ALLOCATION_RUN") && a.includes("using 3 half-term overrides and 1 form responses")), E.actions.join(" | "));
+  }
+  t("the log table is insert and read only", /for insert to anon, authenticated/.test(grab("const LOG_SETUP_SQL=", "`;", "LOG_SETUP_SQL"))
+    && !/for (update|delete|all)/.test(grab("const LOG_SETUP_SQL=", "`;", "LOG_SETUP_SQL")));
+  t("queued entries go up on every cloud load", has("  try{_flushSharedLog();}catch(_){} // v177"));
+  t("the Activity Log screen shows the shared log", has("_renderSharedLog(sharedBox); // v177"));
+}
+
 // ── summary ──────────────────────────────────────────────────────────────────
 (async () => {
   try { await p0Tests(); }
@@ -2447,6 +2569,8 @@ async function p0v176Tests() {
   catch (e) { fail++; failures.push("v175 P0 → the simulation threw: " + e.message); console.log("  FAIL  the v175 P0 simulation threw — " + (e.stack || e)); }
   try { await p0v176Tests(); }
   catch (e) { fail++; failures.push("v176 → the tests threw: " + e.message); console.log("  FAIL  the v176 tests threw — " + (e.stack || e)); }
+  try { await v177Tests(); }
+  catch (e) { fail++; failures.push("v177 → the tests threw: " + e.message); console.log("  FAIL  the v177 tests threw — " + (e.stack || e)); }
   try { await blockTests(); }
   catch (e) { fail++; failures.push("v171 blocks → the tests threw: " + e.message); console.log("  FAIL  the block tests threw — " + (e.stack || e)); }
   try { blockUseTests(); }
