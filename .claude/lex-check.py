@@ -14,8 +14,15 @@ things that have actually broken this app before:
 
 Exit 2 tells Claude Code the edit has a problem and feeds stderr back, so the
 mistake is caught in the same turn rather than at the end of the session.
-Anything else (a different file, a malformed payload, node missing) exits 0 and
-stays out of the way.
+Anything else (a different file, a malformed payload) exits 0 and stays out of
+the way.
+
+Run with --changed it is the Bash hook instead. CLAUDE.md requires patches to go
+through Python scripts run in Bash, and an Edit/Write hook never sees those, so
+until v179 the check was not running on real patches at all (handover §0, §24).
+Bash payloads do not say which file a command touched, so this mode checks every
+LEX-*.html that differs from HEAD (staged, unstaged, or new and untracked), and
+exits 0 silently when there is none.
 """
 import json
 import os
@@ -25,19 +32,12 @@ import sys
 import tempfile
 
 
-def main() -> int:
-    try:
-        payload = json.load(sys.stdin)
-    except Exception:
-        return 0
-
-    path = (payload.get("tool_input") or {}).get("file_path") or ""
+def is_lex_html(path: str) -> bool:
     name = os.path.basename(path)
-    if not (name.startswith("LEX-") and name.endswith(".html")):
-        return 0
-    if not os.path.exists(path):
-        return 0
+    return name.startswith("LEX-") and name.endswith(".html")
 
+
+def check_file(path: str) -> list:
     problems = []
 
     raw = open(path, "rb").read()
@@ -83,16 +83,65 @@ def main() -> int:
                 + " / ".join(first[:4])
             )
 
-    if problems:
-        sys.stderr.write(
-            "LEX post-edit check failed on " + name + ":\n  - "
-            + "\n  - ".join(problems)
-            + "\nFix this before going further; do not continue on top of it.\n"
-        )
-        return 2
+    return problems
 
+
+def report(name: str, problems: list) -> None:
+    sys.stderr.write(
+        "LEX post-edit check failed on " + name + ":\n  - "
+        + "\n  - ".join(problems)
+        + "\nFix this before going further; do not continue on top of it.\n"
+    )
+
+
+def changed_lex_files(root: str) -> list:
+    def git(*args):
+        res = subprocess.run(
+            ["git", "-C", root, *args], capture_output=True, text=True, timeout=30
+        )
+        return res.stdout.splitlines() if res.returncode == 0 else []
+
+    # Against HEAD, not the index: a patch that has been `git add`-ed but not
+    # committed is still unchecked. Untracked files count too, because a fresh
+    # scratch copy of the app is exactly where a patch gets tried first.
+    paths = git("diff", "--name-only", "HEAD") + git(
+        "ls-files", "--others", "--exclude-standard"
+    )
+    found = []
+    for rel in dict.fromkeys(paths):
+        full = os.path.join(root, rel)
+        if is_lex_html(rel) and os.path.exists(full):
+            found.append(full)
+    return found
+
+
+def main_changed() -> int:
+    root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    failed = False
+    for path in changed_lex_files(root):
+        problems = check_file(path)
+        if problems:
+            report(os.path.relpath(path, root), problems)
+            failed = True
+    return 2 if failed else 0
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        return 0
+
+    path = (payload.get("tool_input") or {}).get("file_path") or ""
+    if not is_lex_html(path) or not os.path.exists(path):
+        return 0
+
+    problems = check_file(path)
+    if problems:
+        report(os.path.basename(path), problems)
+        return 2
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main_changed() if "--changed" in sys.argv[1:] else main())
