@@ -320,6 +320,31 @@ S("v144 — Per-date allocation import");
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+S("v180 — Per-date import accepts designations (Out of school, Supported Study, Other)");
+{
+  const G = new Function(
+    [grab("function _pdiDesignation(cell){", "\r\n}", "_pdiDesignation"),
+     grab("function _isOutOfSchool(v){", "}", "_isOutOfSchool")].join("\n") +
+    "\nreturn {_pdiDesignation,_isOutOfSchool};")();
+  const d = G._pdiDesignation;
+  t("'Out of school' is accepted", d("Out of school") === "Out of school");
+  t("'Out Of School' is stored the way LEX spells it", d("Out Of School") === "Out of school");
+  t("'OOS' (carousel sheets) means out of school", d("OOS") === "Out of school" && d("oos") === "Out of school");
+  t("stray spaces are ignored", d("  out  of   school ") === "Out of school");
+  t("the stored value is what the rest of LEX reads as out of school", G._isOutOfSchool(d("OOS")));
+  t("'Supported Study' is accepted", d("supported study") === "Supported Study");
+  t("'Other (see notes)' is accepted", d("Other (See Notes)") === "Other (see notes)");
+  t("an activity name is not a designation", d("Y9 Bouldering") === null);
+  t("a name that only starts like one is not a designation", d("Out of school trip") === null && d("OOS Club") === null);
+  t("a blank cell is not a designation", d("") === null && d(null) === null);
+  const iDes = src.indexOf("const desig=_pdiDesignation(cell);");
+  const iAct = src.indexOf("const act=findActByName_exact(cell)||findActByName(cell);", iDes);
+  t("the importer checks designations before looking for an activity", iDes > 0 && iAct > iDes && iAct - iDes < 300);
+  t("a designation is written as an override, not added to the unknown names",
+    has("if(desig){writes.push({di:dc.di,email:pe,key,act:desig});return;}"));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 S("v145 — Capacity counts pupils, not rows");
 {
   const i = src.indexOf("  if(allocRes){\r\n    const _seenCap={};");

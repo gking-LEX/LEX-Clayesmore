@@ -13,7 +13,7 @@
 // banner on every screen. After a reload into a current copy the list is shown, not lost.
 (function(W){
   'use strict';
-  var V=179;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
+  var V=180;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
   var JKEY='lex12-blockedwrites',MAXJ=300;
   var AUDIT=/\/rest\/v1\/(lex_log|lex_signins)(\?|$)/;   // the database records the version, never refuses
   var NOISE=/-(presence|appversion|synctest)/;           // lex_data keys that are nobody's edits
@@ -1094,7 +1094,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v179';
+const CURRENT_VERSION = 'v180';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -7252,7 +7252,8 @@ function renderAllocPaste(el){
     "For carousels and any other case where different pupils do different things on the same date. "+
     "Paste a sheet with an Email column and one column per date. A blank cell leaves that pupil's "+
     "existing allocation untouched, so the same file can be re-imported safely. Type CLEAR in a cell "+
-    "to remove an override."));
+    "to remove an override. Out of school (or OOS), Supported Study and Other (see notes) are accepted "+
+    "as well as activity names."));
   const pdiTa=h("textarea",{placeholder:"Email\t12/09/2026\t19/09/2026\njsmith@clayesmore.com\tWhole School Walk\tY9 Watersports",
     style:{width:"100%",minHeight:"90px",fontSize:"11px",fontFamily:"var(--mono)",marginBottom:"6px"}});
   pdiCard.appendChild(pdiTa);
@@ -7312,6 +7313,8 @@ function renderAllocPaste(el){
         if(!cell)return;                              // blank = leave alone
         const key=dc.di+"|"+pe;
         if(/^clear$/i.test(cell)){clears.push({di:dc.di,email:pe,key});return;}
+        const desig=_pdiDesignation(cell);                // v180: not an activity, so no date check
+        if(desig){writes.push({di:dc.di,email:pe,key,act:desig});return;}
         const act=findActByName_exact(cell)||findActByName(cell);
         if(!act){badNames.add(cell);return;}
         if(act.di&&!act.di.includes(dc.di))notRunning.push(act.n+" on "+(dates[dc.di]&&dates[dc.di].label||dc.label));
@@ -7797,6 +7800,19 @@ function _visibleDateIndices(term){
 // reported rather than guessed. Handles 19/09/2026, 19/09, 2026-09-19, "Sat 19 Sep",
 // "19 September 2026" and the forms Excel produces when a date column is saved as CSV.
 function _pdiLooksLikeDate(s){return /\d/.test(String(s||""));}
+// v180: the importer only looked names up in Activities, so the designations every other
+// override tool offers (Bulk Assign, Results by Date) were refused as "activity names that do
+// not exist" — and that refusal blocks the WHOLE import, so a carousel sheet with even one
+// out-of-school pupil could not be imported at all. Returns the spelling the rest of LEX stores
+// (_isOutOfSchool, SPECIAL_ALLOCS), or null when the cell should be treated as an activity.
+// "OOS" is accepted because that is how the carousel spreadsheets write it.
+function _pdiDesignation(cell){
+  const c=String(cell||"").trim().toLowerCase().replace(/\s+/g," ");
+  if(c==="oos"||c==="out of school")return "Out of school";
+  if(c==="supported study")return "Supported Study";
+  if(c==="other (see notes)")return "Other (see notes)";
+  return null;
+}
 function _pdiMatchDate(header){
   const raw=String(header||"").trim();if(!raw)return [];
   const norm=raw.toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
