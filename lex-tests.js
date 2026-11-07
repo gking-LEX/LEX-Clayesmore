@@ -3139,6 +3139,45 @@ async function v179Tests() {
   }
 }
 
+async function v181Tests() {
+  S("v181 — Admin opened from a portal tab stays Admin");
+  // The real hashchange handler, with the flag the start-up dispatch sets.
+  const HC = grab("let _lexBootedAsPortal=false;", "\r\n});", "hashchange handler");
+  const mkHC = (hash, booted, admin) => {
+    const log = [], loc = { hash, reload: () => log.push("reload") };
+    let handler = null;
+    const win = { addEventListener: (ev, fn) => { if (ev === "hashchange") handler = fn; } };
+    const api = new Function("window", "location", "isPublicTimetable", "isAdminUser", "isStaffView", "renderStaffView", "render",
+      HC + "\nreturn {set:v=>{_lexBootedAsPortal=v;}};")(win, loc, () => false, () => admin !== false,
+      () => loc.hash === "#staff" || loc.hash === "#pupil", () => log.push("staff"), () => log.push("admin"));
+    api.set(booted);
+    return { go: h => { loc.hash = h; handler(); return log.slice(); }, loc };
+  };
+  t("portal tab → Admin reloads the page instead of drawing Admin in place", JSON.stringify(mkHC("#staff", true).go("#admin")) === '["reload"]');
+  t("…the same for the 'Admin ↗' link (#) and from the pupil preview", JSON.stringify(mkHC("#pupil", true).go("")) === '["reload"]');
+  t("admin tab → Admin still just redraws", JSON.stringify(mkHC("#staff", false).go("#admin")) === '["admin"]');
+  t("either tab → Staff Portal draws the portal", JSON.stringify(mkHC("", true).go("#staff")) === '["staff"]' && JSON.stringify(mkHC("", false).go("#pupil")) === '["staff"]');
+  { const H = mkHC("#staff", true, false), r = H.go("#admin");
+    t("non-admins are still bounced back to the portal, not reloaded", r.length === 0 && H.loc.hash === "#staff"); }
+  t("the start-up dispatch marks a portal boot", /if\(isPublicTimetable\(\)\|\|isStaffView\(\)\)\{\r\n  _lexBootedAsPortal=true;/.test(src));
+
+  // The real portal refresh: it runs from a timer and a visibilitychange listener that
+  // outlive a switch to Admin, so it must do nothing off the portal.
+  const SR = grab("async function _staffDataRefresh(){", "\r\n}", "_staffDataRefresh");
+  const runSR = async (hash) => {
+    const log = [];
+    const f = new Function("location", "supaConnected", "supaClient", "document", "loadFromSupabase", "setStaffDataState", "isPublicTimetable", "isStaffView",
+      "renderPublicTimetable", "renderStaffView", "updateStaffFreshness", "console", SR + "\nreturn _staffDataRefresh;")(
+      { hash }, true, {}, { hidden: false }, async () => log.push("load"), () => {}, () => false,
+      () => hash === "#staff" || hash === "#pupil", () => log.push("timetable"), () => log.push("staff"), () => {}, { error: () => {} });
+    await f();
+    return log.join(",");
+  };
+  t("on Admin the portal refresh draws nothing (the 7 Nov flip)", await runSR("#admin") === "" && await runSR("") === "");
+  t("on the Staff Portal it still reloads and redraws", await runSR("#staff") === "load,staff");
+  t("on the pupil view too", await runSR("#pupil") === "load,staff");
+}
+
 // ── summary ──────────────────────────────────────────────────────────────────
 (async () => {
   try { await p0Tests(); }
@@ -3153,6 +3192,8 @@ async function v179Tests() {
   catch (e) { fail++; failures.push("v178 → the tests threw: " + e.message); console.log("  FAIL  the v178 tests threw — " + (e.stack || e)); }
   try { await v179Tests(); }
   catch (e) { fail++; failures.push("v179 → the tests threw: " + e.message); console.log("  FAIL  the v179 tests threw — " + (e.stack || e)); }
+  try { await v181Tests(); }
+  catch (e) { fail++; failures.push("v181 → the tests threw: " + e.message); console.log("  FAIL  the v181 tests threw — " + (e.stack || e)); }
   try { await blockTests(); }
   catch (e) { fail++; failures.push("v171 blocks → the tests threw: " + e.message); console.log("  FAIL  the block tests threw — " + (e.stack || e)); }
   try { blockUseTests(); }
