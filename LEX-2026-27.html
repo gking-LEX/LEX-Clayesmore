@@ -13,7 +13,7 @@
 // banner on every screen. After a reload into a current copy the list is shown, not lost.
 (function(W){
   'use strict';
-  var V=180;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
+  var V=181;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
   var JKEY='lex12-blockedwrites',MAXJ=300;
   var AUDIT=/\/rest\/v1\/(lex_log|lex_signins)(\?|$)/;   // the database records the version, never refuses
   var NOISE=/-(presence|appversion|synctest)/;           // lex_data keys that are nobody's edits
@@ -1094,7 +1094,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v180';
+const CURRENT_VERSION = 'v181';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -18922,10 +18922,18 @@ function renderAdminLog(el){
   }
 }
 
+// v181: set by the start-up dispatch when this tab opened on the Staff or Pupil portal.
+let _lexBootedAsPortal=false;
 window.addEventListener("hashchange",()=>{
   if(isPublicTimetable())return; // don't re-route on hash change in timetable mode
   if(!isAdminUser()&&!isStaffView()){ try{location.hash="#staff";}catch(_){} return; } // v109: non-admins confined to Staff Portal — bounce any attempt to reach admin
-  if(isStaffView())renderStaffView();else render();
+  if(isStaffView()){renderStaffView();return;}
+  // v181: a tab that opened on a portal never ran the admin start-up (initData, the 30s
+  // multi-admin sync) and still has the portal's refresh timers. Drawing Admin in place
+  // left Admin unsynced, and the portal timer later drew the Staff Portal over it while the
+  // URL still said #admin (reported 7 Nov 2026). Reloading boots Admin the proper way.
+  if(_lexBootedAsPortal){location.reload();return;}
+  render();
 });
 // Auto-refresh from Supabase every 30s for multi-admin sync
 let _autoRefresh=null;
@@ -19418,6 +19426,9 @@ function updateStaffFreshness(){
 // looking at the morning's allocations that afternoon. Reload every five minutes.
 const STAFF_REFRESH_MS=5*60*1000;
 async function _staffDataRefresh(){
+  // v181: only on a portal. This runs from a timer and a visibilitychange listener that
+  // outlive a switch to Admin in the same tab; without this it redrew the Staff Portal over Admin.
+  if(!isStaffView()&&!isPublicTimetable())return;
   if(!supaConnected||!supaClient)return;
   if(document.hidden)return;               // no point refreshing a background tab
   try{
@@ -19459,6 +19470,7 @@ if(typeof window!=="undefined"){
 // the proven staff-mode protections rather than a separate read-only admin mode.
 if(!isAdminUser()&&!isPublicTimetable()&&!isStaffView()){ try{location.hash="#staff";}catch(_){} }
 if(isPublicTimetable()||isStaffView()){
+  _lexBootedAsPortal=true; // v181: see the hashchange handler
   // Synchronous local load + immediate render for non-admin paths
   loadPrefs();
   initSupabase();
