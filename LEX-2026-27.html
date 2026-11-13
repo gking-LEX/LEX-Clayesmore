@@ -13,7 +13,7 @@
 // banner on every screen. After a reload into a current copy the list is shown, not lost.
 (function(W){
   'use strict';
-  var V=181;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
+  var V=182;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
   var JKEY='lex12-blockedwrites',MAXJ=300;
   var AUDIT=/\/rest\/v1\/(lex_log|lex_signins)(\?|$)/;   // the database records the version, never refuses
   var NOISE=/-(presence|appversion|synctest)/;           // lex_data keys that are nobody's edits
@@ -1094,7 +1094,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v181';
+const CURRENT_VERSION = 'v182';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -15410,13 +15410,15 @@ function renderPublicTimetable(){
 
     const searchCard=h("div",{className:"card card-pad mb-16"});
     searchCard.appendChild(h("label",{className:"field-label",style:{fontSize:"13px"}},"Your name"));
-    const searchInp=h("input",{type:"text",placeholder:"e.g. Smith or Jamie",style:{width:"100%",fontSize:"16px",padding:"10px 12px"},
-      onInput:e=>buildMyResult(e.target.value.trim())});
+    // v182: id and remembered value so a data reload (_pubRedraw) keeps what was typed
+    const searchInp=h("input",{type:"text",id:"pub-my-search",value:window._pubQuery||"",placeholder:"e.g. Smith or Jamie",style:{width:"100%",fontSize:"16px",padding:"10px 12px"},
+      onInput:e=>{window._pubQuery=e.target.value;buildMyResult(e.target.value.trim());}});
     searchCard.appendChild(searchInp);
     tabContent.appendChild(searchCard);
 
     const myResult=h("div",null);
     tabContent.appendChild(myResult);
+    if(window._pubQuery)buildMyResult(window._pubQuery.trim()); // v182: redraw the result with fresh data
 
     function buildMyResult(query){
       myResult.innerHTML="";
@@ -19434,7 +19436,7 @@ async function _staffDataRefresh(){
   try{
     await loadFromSupabase();
     setStaffDataState("fresh");
-    if(isPublicTimetable())renderPublicTimetable();else renderStaffView();
+    if(isPublicTimetable())_pubRedraw();else renderStaffView();
     updateStaffFreshness();
   }catch(e){
     console.error("staff refresh failed",e);
@@ -19452,6 +19454,26 @@ function startStaffPresence(){
   _staffRefreshTimer=setInterval(_staffDataRefresh,STAFF_REFRESH_MS);
   // Catch up immediately when the tab is brought back to the front.
   document.addEventListener("visibilitychange",()=>{if(!document.hidden)_staffDataRefresh();});
+}
+// v182: the name-search timetable (?view=timetable) loaded its data once and never again;
+// only the portals started the five-minute reload. On 13 Nov a Y9 pupil's laptop showed the
+// Autumn 2 rotation from before the 5 Nov re-import on every date, after the pupil "refreshed"
+// (clicking the tab or retyping a name only redraws the copy already held). Same reload as the
+// portals, without the presence heartbeat: pupils are not staff on duty.
+function startPublicTimetableRefresh(){
+  if(_staffRefreshTimer)clearInterval(_staffRefreshTimer);
+  _staffRefreshTimer=setInterval(_staffDataRefresh,STAFF_REFRESH_MS);
+  document.addEventListener("visibilitychange",()=>{if(!document.hidden)_staffDataRefresh();});
+}
+// v182: renderPublicTimetable rebuilds the whole page, so a reload landing while a pupil was
+// reading emptied the name box and jumped to the top. The name is kept in window._pubQuery
+// (buildMyTab); this puts back the scroll position and the cursor.
+function _pubRedraw(){
+  const a=document.activeElement,typing=!!(a&&a.id==="pub-my-search"),sy=window.scrollY;
+  renderPublicTimetable();
+  if(typing){const s=document.getElementById("pub-my-search");
+    if(s){s.focus();try{s.setSelectionRange(s.value.length,s.value.length);}catch(_){}}}
+  requestAnimationFrame(()=>window.scrollTo(0,sy));
 }
 // Depart the presence map on tab close / navigation
 if(typeof window!=="undefined"){
@@ -19477,7 +19499,7 @@ if(isPublicTimetable()||isStaffView()){
   try{loadLocal();}catch(e){console.error("startup: localStorage load failed",e);}
   try{_loadPendingOvrDel();}catch(_){}
   try{
-    if(isPublicTimetable())renderPublicTimetable();
+    if(isPublicTimetable()){renderPublicTimetable();startPublicTimetableRefresh();}
     else {renderStaffView();startStaffPresence();}
   }catch(e){
     console.error("startup: initial render failed",e);
@@ -19489,7 +19511,7 @@ if(isPublicTimetable()||isStaffView()){
     try{setStaffDataState("loading");}catch(_){}
     loadFromSupabase().then(()=>{
       try{
-        if(isPublicTimetable())renderPublicTimetable();
+        if(isPublicTimetable())_pubRedraw(); // v182: keeps a name typed before the cloud landed
         else renderStaffView();
         setStaffDataState("fresh");
       }catch(e){console.error("background re-render failed",e);}

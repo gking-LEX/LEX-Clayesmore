@@ -3178,6 +3178,71 @@ async function v181Tests() {
   t("on the pupil view too", await runSR("#pupil") === "load,staff");
 }
 
+async function v182Tests() {
+  S("v182 — the name-search timetable reloads its data");
+  // 13 Nov: a Y9 pupil's ?view=timetable tab showed the Autumn 2 rotation from before the 5 Nov
+  // re-import. That page loaded once and never again; only the portals reloaded every five minutes.
+  const ST = grab("function startPublicTimetableRefresh(){", "\r\n}", "startPublicTimetableRefresh");
+  {
+    const timers = [], listeners = {}, calls = [];
+    const doc = { hidden: false, addEventListener: (ev, fn) => { listeners[ev] = fn; } };
+    const refresh = () => calls.push("refresh");
+    const api = new Function("document", "setInterval", "clearInterval", "_staffDataRefresh", "STAFF_REFRESH_MS",
+      "let _staffRefreshTimer=null;\n" + ST + "\nreturn {start:startPublicTimetableRefresh,timer:()=>_staffRefreshTimer};")(
+      doc, (fn, ms) => { timers.push({ fn, ms }); return 7; }, () => {}, refresh, 300000);
+    api.start();
+    t("a five-minute reload timer is started", timers.length === 1 && timers[0].ms === 300000 && timers[0].fn === refresh && api.timer() === 7);
+    t("bringing the tab back to the front reloads at once (the laptop-lid case)", typeof listeners.visibilitychange === "function"
+      && (listeners.visibilitychange(), calls.join() === "refresh"));
+    doc.hidden = true; listeners.visibilitychange();
+    t("…but not when the tab is going into the background", calls.length === 1);
+  }
+  t("the timetable start-up starts it", has("if(isPublicTimetable()){renderPublicTimetable();startPublicTimetableRefresh();}"));
+  t("the timetable does not send the staff presence heartbeat", !/if\(isPublicTimetable\(\)\)\{[^}]*startStaffPresence/.test(src));
+
+  // The real refresh, on the timetable: loads, then redraws keeping the pupil's place.
+  const SR = grab("async function _staffDataRefresh(){", "\r\n}", "_staffDataRefresh");
+  {
+    const log = [];
+    const f = new Function("location", "supaConnected", "supaClient", "document", "loadFromSupabase", "setStaffDataState", "isPublicTimetable", "isStaffView",
+      "renderPublicTimetable", "_pubRedraw", "renderStaffView", "updateStaffFreshness", "console", SR + "\nreturn _staffDataRefresh;")(
+      { hash: "" }, true, {}, { hidden: false }, async () => log.push("load"), () => {}, () => true, () => false,
+      () => log.push("timetable"), () => log.push("redraw"), () => log.push("staff"), () => {}, { error: () => {} });
+    await f();
+    t("on the timetable the refresh loads, then redraws keeping the pupil's place", log.join() === "load,redraw", log.join());
+  }
+
+  // The real redraw: the cursor goes back into the name box and the page back to where it was.
+  const PR = grab("function _pubRedraw(){", "\r\n}", "_pubRedraw");
+  const runPR = (focusedId) => {
+    const log = [], box = { id: "pub-my-search", value: "Smi", focus: () => log.push("focus"), setSelectionRange: (a, b) => log.push("caret " + a + "-" + b) };
+    const doc = { activeElement: focusedId ? { id: focusedId } : null, getElementById: id => id === "pub-my-search" ? box : null };
+    const win = { scrollY: 640, scrollTo: (x, y) => log.push("scroll " + y) };
+    new Function("document", "window", "renderPublicTimetable", "requestAnimationFrame", PR + "\nreturn _pubRedraw;")(
+      doc, win, () => log.push("render"), fn => fn())();
+    return log.join();
+  };
+  t("typing in the name box: redrawn, cursor back at the end, scroll kept", runPR("pub-my-search") === "render,focus,caret 3-3,scroll 640", runPR("pub-my-search"));
+  t("not typing: redrawn and scroll kept, no cursor placed", runPR(null) === "render,scroll 640" && runPR("other") === "render,scroll 640");
+
+  // The real My Timetable tab: a name typed before the reload is still there, and searched again.
+  const MT = grab("  function buildMyTab(){", "\r\n  }", "buildMyTab");
+  {
+    const mk = (tag, attrs, ...ch) => ({ tag, attrs: attrs || {}, children: ch.flat(), appendChild(c) { this.children.push(c); return c; }, set innerHTML(v) { this.children = []; } });
+    const text = n => n == null ? "" : typeof n === "string" ? n : (n.children || []).map(text).join(" ");
+    const tabContent = mk("div");
+    const win = { _pubQuery: "Zzyzx" };
+    new Function("window", "h", "tabContent", "pupils", "allocRes", "formData", "normEmail", "setTimeout", "requestAnimationFrame", MT + "\nreturn buildMyTab;")(
+      win, mk, tabContent, [{ surname: "Testperson", forename: "A", email: "a@x.test" }], [{ email: "a@x.test" }], [], ne, () => {}, () => {})();
+    const find = (n, pred) => !n || typeof n !== "object" ? null : pred(n) ? n : (n.children || []).reduce((r, c) => r || find(c, pred), null);
+    const box = find(tabContent, n => n.attrs && n.attrs.id === "pub-my-search");
+    t("the name box keeps what was typed across a reload", !!box && box.attrs.value === "Zzyzx");
+    t("…and the search is run again on the fresh data", /No one found matching "Zzyzx"/.test(text(tabContent)));
+    let typed = null; box.attrs.onInput({ target: { value: "Bra" } }); typed = win._pubQuery;
+    t("typing records the name for the next reload", typed === "Bra");
+  }
+}
+
 // ── summary ──────────────────────────────────────────────────────────────────
 (async () => {
   try { await p0Tests(); }
@@ -3194,6 +3259,8 @@ async function v181Tests() {
   catch (e) { fail++; failures.push("v179 → the tests threw: " + e.message); console.log("  FAIL  the v179 tests threw — " + (e.stack || e)); }
   try { await v181Tests(); }
   catch (e) { fail++; failures.push("v181 → the tests threw: " + e.message); console.log("  FAIL  the v181 tests threw — " + (e.stack || e)); }
+  try { await v182Tests(); }
+  catch (e) { fail++; failures.push("v182 → the tests threw: " + e.message); console.log("  FAIL  the v182 tests threw — " + (e.stack || e)); }
   try { await blockTests(); }
   catch (e) { fail++; failures.push("v171 blocks → the tests threw: " + e.message); console.log("  FAIL  the block tests threw — " + (e.stack || e)); }
   try { blockUseTests(); }
