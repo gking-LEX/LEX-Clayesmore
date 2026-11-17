@@ -3243,6 +3243,57 @@ async function v182Tests() {
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// v183 — the Year Overview prints, or saves as a PDF, as a clean copy of the whole grid.
+// Browser Print only caught the rows on screen (the grid's scroll box is sized to the window)
+// and cut off the right-hand columns. Theme text below is invented.
+function v183Tests() {
+  S("v183 — Year Overview print / Save as PDF");
+  const DOC = grab("const OV_PRINT_VARS={", "\n}", "overviewPrintDoc");
+  const PO = grab("function printOverview(){", "\r\n}", "printOverview");
+  const docFn = new Function(DOC + "\nreturn overviewPrintDoc;")();
+  const TABLE = '<table class="ovv" style="min-width:1200px"><tbody><tr><td style="background:#f3cfe0;color:var(--text)">Invented theme</td></tr></tbody></table>';
+  const d = docFn(TABLE, "LEX Year Overview <2026-27> & co", "17/11/2026, 11:30:00");
+  t("the copy is A3 landscape", /@page\{size:A3 landscape;/.test(d));
+  t("theme fills are kept when printed (print-color-adjust)", d.includes("-webkit-print-color-adjust:exact;print-color-adjust:exact;"));
+  t("the grid is placed in the page unchanged", d.includes(TABLE));
+  t("…and drops its on-screen 1200px minimum and sticky header", d.includes("min-width:0!important") && d.includes("th{position:static!important;}"));
+  t("the colours the cells refer to are defined, in the light theme", d.includes(":root{--surface2:#f8f7f4;") && d.includes("--text:#1a1916;") && d.includes("--border:#e0deda;") &&d.includes("--purple:#7c3aed;") && d.includes("--accent:#2563eb;"));
+  t("the title is escaped, in the tab title and the heading", d.includes("<title>LEX Year Overview &lt;2026-27&gt; &amp; co</title>") && d.includes("<h2>LEX Year Overview &lt;2026-27&gt; &amp; co</h2>") && !d.includes("<2026-27>"));
+  t("the print dialog opens by itself", d.includes("window.onload=()=>{window.print();}") && (d.match(/<\/script>/g) || []).length === 1 && d.endsWith("</body></html>"));
+
+  // The real printOverview, with the browser around it stood in for.
+  const run = (o) => {
+    const log = { renders: [], toasts: [], opens: [], written: "", closed: false };
+    const tbl = { outerHTML: TABLE };
+    const document = { createElement: () => ({ querySelector: q => (q === "table" && o.table !== false ? tbl : null) }) };
+    const win = { document: { write: s => { log.written += s; }, close: () => { log.closed = true; } } };
+    const window = { open: (...a) => { log.opens.push(a); return o.blocked ? null : win; } };
+    const ret = new Function("document", "window", "renderOverview", "toast", "overviewPrintDoc", "SYSTEM_YEAR_LABEL", PO + "\nreturn printOverview;")(
+      document, window, (el, opts) => log.renders.push(opts), (m, k) => log.toasts.push(k + ":" + m), docFn, "2026-27")();
+    log.ret = ret; return log;
+  };
+  {
+    const r = run({});
+    t("it draws the read-only grid, not the admin's editable one", r.renders.length === 1 && r.renders[0] && r.renders[0].editable === false);
+    t("…opens one new window and writes the whole copy into it", r.ret === true && r.opens.length === 1 && r.opens[0][1] === "_blank" && r.written.includes(TABLE) && r.closed);
+    t("…titled with the school year", r.written.includes("<title>LEX Year Overview — Clayesmore 2026-27</title>"));
+  }
+  {
+    const r = run({ blocked: true });
+    t("a blocked pop-up says so rather than failing silently", r.ret === false && r.toasts.length === 1 && /blocked/.test(r.toasts[0]) && r.toasts[0].startsWith("err:"));
+  }
+  {
+    const r = run({ table: false });
+    t("with no dates there is nothing to print, and no empty window", r.ret === false && r.opens.length === 0 && r.toasts.length === 1);
+  }
+  // The button sits in the card header, outside the admin-only toolbar, so the Staff Portal has it too.
+  const RO = grab("function renderOverview(el,opts){", "\r\n}", "renderOverview");
+  const btnAt = RO.indexOf("onClick:()=>printOverview()}");
+  t("the Overview has the Print / Save as PDF button", btnAt > 0 && RO.includes('"🖨 Print / Save as PDF"'));
+  t("…in the header, before the admin-only toolbar, so read-only views get it", btnAt > 0 && btnAt < RO.indexOf("if(editable){\r\n    const tb="));
+}
+
 // ── summary ──────────────────────────────────────────────────────────────────
 (async () => {
   try { await p0Tests(); }
@@ -3261,6 +3312,8 @@ async function v182Tests() {
   catch (e) { fail++; failures.push("v181 → the tests threw: " + e.message); console.log("  FAIL  the v181 tests threw — " + (e.stack || e)); }
   try { await v182Tests(); }
   catch (e) { fail++; failures.push("v182 → the tests threw: " + e.message); console.log("  FAIL  the v182 tests threw — " + (e.stack || e)); }
+  try { v183Tests(); }
+  catch (e) { fail++; failures.push("v183 → the tests threw: " + e.message); console.log("  FAIL  the v183 tests threw — " + (e.stack || e)); }
   try { await blockTests(); }
   catch (e) { fail++; failures.push("v171 blocks → the tests threw: " + e.message); console.log("  FAIL  the block tests threw — " + (e.stack || e)); }
   try { blockUseTests(); }
