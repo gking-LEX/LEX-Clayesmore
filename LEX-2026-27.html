@@ -13,7 +13,7 @@
 // banner on every screen. After a reload into a current copy the list is shown, not lost.
 (function(W){
   'use strict';
-  var V=182;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
+  var V=183;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
   var JKEY='lex12-blockedwrites',MAXJ=300;
   var AUDIT=/\/rest\/v1\/(lex_log|lex_signins)(\?|$)/;   // the database records the version, never refuses
   var NOISE=/-(presence|appversion|synctest)/;           // lex_data keys that are nobody's edits
@@ -1094,7 +1094,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v182';
+const CURRENT_VERSION = 'v183';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -5723,6 +5723,45 @@ function _ovComposeValue(text,f){
   return o;
 }
 
+// v183: the Year Overview had no print or PDF option, and the browser's own Print could not
+// stand in for one: the grid sits in a scroll box sized to the screen (_fitCalScroll sets a pixel
+// max-height), so Print caught only the rows on screen, and its 1200px minimum width lost the
+// right-hand columns on a portrait page. printOverview draws the read-only grid (the same code the
+// Staff Portal uses) off-screen and opens it on its own in a new window, A3 landscape, where the
+// print dialog offers "Save as PDF". It mirrors the Staff Calendar's Print button.
+// The grid holds activity themes per year group, never pupil names, so the copy is safe to share.
+// The new window has none of LEX's stylesheet, so the theme colours the cells refer to are defined
+// again here. They are the light-theme values on purpose: a dark-mode admin still gets a white page.
+const OV_PRINT_VARS={"--surface2":"#f8f7f4","--border":"#e0deda","--border2":"#d0cfc9","--text":"#1a1916",
+  "--text2":"#5c5a55","--text3":"#9c9a94","--accent":"#2563eb","--purple":"#7c3aed"};
+function overviewPrintDoc(tableHtml,title,printedAt){
+  const esc=x=>String(x==null?"":x).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const vars=Object.keys(OV_PRINT_VARS).map(k=>k+":"+OV_PRINT_VARS[k]+";").join("");
+  return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>"+esc(title)+"</title><style>"+
+    ":root{"+vars+"}"+
+    "body{font-family:Arial,sans-serif;margin:12px;color:#1a1916;background:#fff;}"+
+    "h2{font-size:15px;margin:0 0 4px;}p.lex-printed{font-size:9px;color:#666;margin:0 0 8px;}"+
+    // Without print-color-adjust Chrome and Edge drop cell fills, and the theme colours are the point.
+    "*{-webkit-print-color-adjust:exact;print-color-adjust:exact;}"+
+    // The on-screen sticky header and 1200px minimum are for scrolling; on paper the grid fits the page.
+    "table{width:100%!important;min-width:0!important;border-collapse:collapse;}th{position:static!important;}tr{break-inside:avoid;}"+
+    "@media print{@page{size:A3 landscape;margin:10mm;}body{margin:0;}}"+
+    "</style></head><body><h2>"+esc(title)+"</h2><p class=\"lex-printed\">Printed: "+esc(printedAt)+"</p>"+
+    tableHtml+
+    "<script>window.onload=()=>{window.print();}<\/script></body></html>";
+}
+function printOverview(){
+  const tmp=document.createElement("div");
+  renderOverview(tmp,{editable:false});
+  const tbl=tmp.querySelector("table");
+  if(!tbl){toast("No LEX dates yet, so there is nothing to print","err");return false;}
+  const win=window.open("","_blank","width=1200,height=800");
+  if(!win){toast("Your browser blocked the print window. Allow pop-ups for this site and try again.","err");return false;}
+  win.document.write(overviewPrintDoc(tbl.outerHTML,"LEX Year Overview \u2014 Clayesmore "+SYSTEM_YEAR_LABEL,new Date().toLocaleString("en-GB")));
+  win.document.close();
+  return true;
+}
+
 // v75: Year overview front-page. Editable grid in admin; read-only in
 // staff portal and public timetable. Rows derived from dates[] in
 // chronological order; week numbers computed as Saturdays-since-first-LEX-Saturday-of-that-term.
@@ -5839,7 +5878,10 @@ function renderOverview(el,opts){
   const card=h("div",{className:"card card-pad"});
   card.appendChild(h("div",{className:"card-header flex-between",style:{marginBottom:"12px"}},
     h("span",{className:"card-title"},"Year Overview — "+SYSTEM_YEAR_LABEL),
-    h("span",{style:{fontSize:"11px",color:"var(--text3)"}},editable?"Click any cell to edit. Saves on tab-out.":"Read-only view")
+    h("div",{style:{display:"flex",alignItems:"center",gap:"10px"}},
+      h("span",{style:{fontSize:"11px",color:"var(--text3)"}},editable?"Click any cell to edit. Saves on tab-out.":"Read-only view"),
+      h("button",{className:"btn btn-ghost btn-sm",title:"Opens a clean copy of the whole grid. Choose \u201cSave as PDF\u201d as the printer to make a PDF.",onClick:()=>printOverview()},"🖨 Print / Save as PDF") // v183
+    )
   ));
 
   if(!rows.length){
