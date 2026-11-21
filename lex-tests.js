@@ -3298,6 +3298,53 @@ function v183Tests() {
   t("…in the header, before the admin-only toolbar, so read-only views get it", btnAt > 0 && btnAt < RO.indexOf("if(editable){\r\n    const tb="));
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// v184: the activities import and the staff calendar. Invented data only.
+function v184Tests() {
+  S("v184 — staff calendar: dates to come only; Type and P1/P4 leads in the import");
+  const SYNC = [grab("function syncRosterToCalendar(onlyDis){", "\r\n}", "syncRosterToCalendar"),
+    grab("function _diHasHappened(di,todayYmd){", "\r\n}", "_diHasHappened"),
+    grab("function saSet(key,actName,role){", "\r\n}", "saSet"),
+    grab("function isSplitAct(a){", "}", "isSplitAct"),
+    grab("function parseDateDmy(", "\r\n}", "parseDateDmy")].join("\n");
+  const world = (acts, sa) => new Function("acts", "sa", `const dates=[{full:"07/11/2026"},{full:"09/01/2027"},{full:"16/01/2027"},{full:"21/11/2026"}];
+    function _todayYmd(){return 20261121;} function saveAll(){} function findActByName_exact(){return null;}
+    ${SYNC}\nsyncRosterToCalendar();return sa;`)(acts, sa);
+  const r = world([
+    { n: "Clay", di: [0, 1, 3], sessA: "Clay", sessB: "Clay", lead: "TCH", staff: ["SUP"] },
+    { n: "Study then Launch", di: [1], sessA: "Study", sessB: "Launch", sessALead: "AAA", sessBLead: "BBB", staff: [] },
+    { n: "Hockey", di: [2], sessA: "Hockey", sessB: "Hockey", lead: "", staff: ["OTH"] }], { "2|OTH": { act: "Forensics", role: "lead" } });
+  t("a date that has happened is never written (7 Nov stays empty)", !Object.keys(r).some(k => k.startsWith("0|")), JSON.stringify(r));
+  t("a date to come gets the lead and support", r["1|TCH"] && r["1|TCH"].act === "Clay" && r["1|TCH"].role === "lead" && r["1|SUP"] && r["1|SUP"].role === "support");
+  t("today still counts as to come (as for registers)", !!r["3|TCH"]);
+  t("a split's P1 and P4 leads go on their own sessions", r["1|AAA|A"] && r["1|AAA|A"].act === "Study" && r["1|BBB|B"] && r["1|BBB|B"].act === "Launch");
+  t("an existing entry is never overwritten", r["2|OTH"].act === "Forensics");
+  const scoped = new Function("acts", "sa", `const dates=[{full:"28/11/2026"},{full:"09/01/2027"}];
+    function _todayYmd(){return 20261121;} function saveAll(){} function findActByName_exact(){return null;}
+    ${SYNC}\nsyncRosterToCalendar(new Set([1]));return sa;`)([{ n: "Wellbeing", di: [0, 1], sessA: "Wellbeing", sessB: "Wellbeing", lead: "", staff: ["HPX"] }], {});
+  t("an import fills only the dates its file covers (a Spring file leaves 28 Nov alone)", !scoped["0|HPX"] && scoped["1|HPX"] && scoped["1|HPX"].act === "Wellbeing", JSON.stringify(scoped));
+  t("…the import passes its dates", has("syncRosterToCalendar(hasDateCols?new Set(dateCols.map(dc=>dc.di)):undefined); // v184"));
+
+  const X = new Function(grab("function _actImportExtras(data,get,has,badTypes){", "\r\n}", "_actImportExtras") + "\nreturn _actImportExtras;")();
+  const row = (cols, data) => { const bad = []; const d = Object.assign({ n: "Invented", lead: "", sessA: "", sessB: "" }, data);
+    X(d, c => cols[c] || "", c => c in cols, bad); return { d, bad }; };
+  let q = row({ type: " Compulsory " }, { lead: "TCH" });
+  t("Type sets the activity type (any case, spaces trimmed)", q.d.type === "compulsory");
+  t("a whole-day activity's P1 and P4 leads follow a new Lead (screens show those)", q.d.sessALead === "TCH" && q.d.sessBLead === "TCH" && q.d.sessA === "Invented" && q.d.sessB === "Invented");
+  q = row({ type: "mandatory" }, {});
+  t("an unknown Type is reported and leaves the type alone", q.d.type === undefined && q.bad.length === 1 && /mandatory/.test(q.bad[0]));
+  q = row({}, { lead: "" });
+  t("no Type column: type untouched; no Lead: P1/P4 leads untouched", !("type" in q.d) && !("sessALead" in q.d) && !("sessBLead" in q.d));
+  q = row({ sessalead: "AAA", sessblead: "BBB" }, { sessA: "Study", sessB: "Launch", lead: "ZZZ" });
+  t("SessALead and SessBLead set a split's leads", q.d.sessALead === "AAA" && q.d.sessBLead === "BBB");
+  q = row({ sessalead: "", sessblead: "" }, { sessA: "Study", sessB: "Launch", lead: "ZZZ" });
+  t("a split's leads are not copied from Lead", !("sessALead" in q.d) && !("sessBLead" in q.d));
+  t("the import reads the new columns and calls this", has('"sessavenue","sessbvenue","type","sessalead","sessblead"]);') && has("_actImportExtras(data,get,col=>colIdx(col)>=0,_badTypes); // v184"));
+  t("…and reports a bad Type", has('if(_badTypes.length)alert("Type must be optional, compulsory or designation.'));
+  t("the export writes Type, SessALead and SessBLead, so a round trip keeps them",
+    has('"SessA","SessB","SessAVenue","SessBVenue","Type","SessALead","SessBLead",..._dis.map(di=>dates[di].label)];') && has('a.type||"optional",a.sessALead||"",a.sessBLead||"", // v184'));
+}
+
 // ── summary ──────────────────────────────────────────────────────────────────
 (async () => {
   try { await p0Tests(); }
@@ -3318,6 +3365,8 @@ function v183Tests() {
   catch (e) { fail++; failures.push("v182 → the tests threw: " + e.message); console.log("  FAIL  the v182 tests threw — " + (e.stack || e)); }
   try { v183Tests(); }
   catch (e) { fail++; failures.push("v183 → the tests threw: " + e.message); console.log("  FAIL  the v183 tests threw — " + (e.stack || e)); }
+  try { v184Tests(); }
+  catch (e) { fail++; failures.push("v184 → the tests threw: " + e.message); console.log("  FAIL  the v184 tests threw — " + (e.stack || e)); }
   try { await blockTests(); }
   catch (e) { fail++; failures.push("v171 blocks → the tests threw: " + e.message); console.log("  FAIL  the block tests threw — " + (e.stack || e)); }
   try { blockUseTests(); }
