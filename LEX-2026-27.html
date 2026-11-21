@@ -13,7 +13,7 @@
 // banner on every screen. After a reload into a current copy the list is shown, not lost.
 (function(W){
   'use strict';
-  var V=183;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
+  var V=184;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
   var JKEY='lex12-blockedwrites',MAXJ=300;
   var AUDIT=/\/rest\/v1\/(lex_log|lex_signins)(\?|$)/;   // the database records the version, never refuses
   var NOISE=/-(presence|appversion|synctest)/;           // lex_data keys that are nobody's edits
@@ -1094,7 +1094,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v183';
+const CURRENT_VERSION = 'v184';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -2299,9 +2299,19 @@ function initSA(){
   }
 }
 // Call when roster changes to sync calendar (non-destructive: only adds, doesn't remove)
-function syncRosterToCalendar(){
+function syncRosterToCalendar(onlyDis){
+  // v184: a date that has happened is left alone. Every activities import, new activity, lead
+  // change and added support runs this over ALL dates, and it fills any empty slot — so a
+  // lead added for Spring was also written onto Autumn Saturdays they never worked (the
+  // Spring 2027 dry run would have put a support teacher on a 7 Nov activity). The staff calendar
+  // is the record of who did what; only dates to come are filled.
+  // An import passes the dates its file covers (onlyDis), so a Spring file leaves Autumn alone:
+  // the Spring dry run otherwise put a house parent on Y9 Wellbeing for 5 Dec (on its staff list, free that day).
+  const today=_todayYmd();
   acts.forEach(a=>{
     a.di.forEach(di=>{
+      if(_diHasHappened(di,today))return;
+      if(onlyDis&&!onlyDis.has(di))return;
       if(isSplitAct(a)){
         if(a.sessALead&&!sa[di+"|"+a.sessALead+"|A"]&&!sa[di+"|"+a.sessALead])saSet(di+"|"+a.sessALead+"|A",a.sessA,"lead");
         if(a.sessBLead&&!sa[di+"|"+a.sessBLead+"|B"]&&!sa[di+"|"+a.sessBLead])saSet(di+"|"+a.sessBLead+"|B",a.sessB,"lead");
@@ -2312,6 +2322,22 @@ function syncRosterToCalendar(){
     });
   });
   saveAll();
+}
+// v184: Type, SessALead and SessBLead in the activities import. Without them, whole-year
+// activities arrived as "optional" and a split's P1/P4 leads had to be set by hand. A
+// whole-day activity's lead is also held in sessALead/sessBLead, which most screens show, so a
+// new Lead alone left the old name showing (Surviving would still have shown its Autumn lead). Only a
+// column that is present and filled changes anything, so export → import changes nothing.
+function _actImportExtras(data,get,has,badTypes){
+  const ty=has("type")?String(get("type")).trim().toLowerCase():"";
+  if(ty){if(["optional","compulsory","designation"].includes(ty))data.type=ty;else badTypes.push(data.n+" ("+get("type")+")");}
+  if(!data.sessA)data.sessA=data.n;
+  if(!data.sessB)data.sessB=data.n;
+  const whole=data.sessA===data.sessB;
+  const la=has("sessalead")?get("sessalead"):"",lb=has("sessblead")?get("sessblead"):"";
+  if(la)data.sessALead=la;else if(whole&&data.lead)data.sessALead=data.lead;
+  if(lb)data.sessBLead=lb;else if(whole&&data.lead)data.sessBLead=data.lead;
+  return data;
 }
 
 // ═══════════════════════════════════════════════
@@ -14946,11 +14972,12 @@ function renderAdminBulk(el){
 
   // v64: Extended activity import + matching CSV export.
   // Columns supported (header-driven, case-insensitive, only Name required):
-  //   Name, Year Groups, Capacity, Lead, Support, Venue, Cost, Session, Notes, Offsite, SessA, SessB, SessAVenue, SessBVenue
+  //   Name, Year Groups, Capacity, Lead, Support, Venue, Cost, Session, Notes, Offsite, SessA, SessB, SessAVenue, SessBVenue,
+  //   and (v184) Type, SessALead, SessBLead
   const csvActCard=h("div",{className:"card card-pad mb-12"});
   csvActCard.appendChild(h("div",{style:{fontWeight:600,marginBottom:"6px"}},"📥 Import Activities (CSV/TSV)"));
   csvActCard.appendChild(h("p",{style:{fontSize:"11px",color:"var(--text3)",marginBottom:"6px"}},
-    "Columns (Name required, rest optional): Name, Year Groups, Capacity, Lead, Support, Venue, Cost, Session, Notes, Offsite, SessA, SessB, SessAVenue, SessBVenue. Existing activities (matched by name) are updated; new ones added. Add one Y/N column per date (header = the exact date label) to set when each activity runs — export first to get the correct headers. The Support column sets additional staff. Export by term (Autumn/Spring/Summer) to edit one term at a time — re-importing a single-term file only changes that term's dates and leaves the others untouched."));
+    "Columns (Name required, rest optional): Name, Year Groups, Capacity, Lead, Support, Venue, Cost, Session, Notes, Offsite, SessA, SessB, SessAVenue, SessBVenue, Type (optional / compulsory / designation), SessALead, SessBLead (P1 and P4 leads of a split). Existing activities (matched by name) are updated; new ones added. Add one Y/N column per date (header = the exact date label) to set when each activity runs — export first to get the correct headers. The Support column sets additional staff. Export by term (Autumn/Spring/Summer) to edit one term at a time — re-importing a single-term file only changes that term's dates and leaves the others untouched. Staff are put on the calendar for dates still to come only."));
   const csvActExample="Name\tYear Groups\tCapacity\tLead\tSupport\tVenue\tCost\tSession\tNotes\tOffsite\tSessA\tSessB\tSat 19 Sep\tSat 27 Sep\nDofE\t9,10\t30\tJAR\tABC,DEF\tSports Hall\tFOC\tA+B\tBronze award\tno\t\t\tY\tN\nKarting\t12,13\t9\tGHK\t\tTeamSport\t50\tA+B\t\tyes\t\t\tN\tY";
   const csvActTa=h("textarea",{rows:4,placeholder:csvActExample,style:{marginBottom:"8px"}});
   csvActCard.appendChild(csvActTa);
@@ -14968,7 +14995,7 @@ function renderAdminBulk(el){
       const reqName=colIdx("name");
       if(reqName<0){toast("CSV must have a 'Name' column","err");return;}
       // v87: detect per-date Y/N columns (header = exact date label); flag headers matching neither a field nor a date
-      const _knownFields=new Set(["name","year groups","yg","capacity","cap","lead","support","venue","cost","session","sess","notes","offsite","sessa","sessb","sessavenue","sessbvenue"]);
+      const _knownFields=new Set(["name","year groups","yg","capacity","cap","lead","support","venue","cost","session","sess","notes","offsite","sessa","sessb","sessavenue","sessbvenue","type","sessalead","sessblead"]);
       const dateCols=[];const unknownHeaders=[];
       headers.forEach((hdr,i)=>{
         if(!hdr)return;
@@ -14977,7 +15004,7 @@ function renderAdminBulk(el){
         else if(!_knownFields.has(hdr))unknownHeaders.push(hdr);
       });
       const hasDateCols=dateCols.length>0;
-      let added=0,updated=0;
+      let added=0,updated=0;const _badTypes=[]; // v184
       lines.slice(1).forEach(l=>{
         const c=l.split(sep).map(x=>x.replace(/^"|"$/g,"").trim());
         if(!c[reqName])return;
@@ -15000,6 +15027,7 @@ function renderAdminBulk(el){
           sessAVenue:get("sessavenue")||"",
           sessBVenue:get("sessbvenue")||""
         };
+        _actImportExtras(data,get,col=>colIdx(col)>=0,_badTypes); // v184
         if(hasDateCols){
           // scope-aware: the imported date columns define what this file governs; dates outside the
           // imported scope are preserved on existing activities (so a single-term file is per-term safe)
@@ -15011,8 +15039,9 @@ function renderAdminBulk(el){
         if(existing){Object.assign(existing,data);updated++;}
         else{const na={id:"I"+Date.now().toString(36).slice(-4)+(added+updated),mb:0,...data};if(!na.di)na.di=[];acts.push(na);added++;}
       });
-      syncRosterToCalendar();
+      syncRosterToCalendar(hasDateCols?new Set(dateCols.map(dc=>dc.di)):undefined); // v184: only the file's dates
       toast(added+" added, "+updated+" updated"+(hasDateCols?" \u00b7 dates applied":""));
+      if(_badTypes.length)alert("Type must be optional, compulsory or designation. Left unchanged for: "+_badTypes.join(", ")); // v184
       if(unknownHeaders.length)alert("These column headers were not recognised as fields or dates, so they were ignored: "+unknownHeaders.join(", ")+". Date columns must match a date label exactly (export first to get them), and any new date must be added in Settings \u2192 Dates before it can be imported.");
       render();
     }},"Import"),
@@ -15020,13 +15049,14 @@ function renderAdminBulk(el){
       // Export activities to CSV (TSV actually — easier paste back)
       const _term=_bulkExportTermSel.value;
       const _dis=sortedDateIndices().filter(di=>_term==="__all__"||_termOfHalf(dates[di].half)===_term);
-      const cols=["Name","Year Groups","Capacity","Lead","Support","Venue","Cost","Session","Notes","Offsite","SessA","SessB","SessAVenue","SessBVenue",..._dis.map(di=>dates[di].label)];
+      const cols=["Name","Year Groups","Capacity","Lead","Support","Venue","Cost","Session","Notes","Offsite","SessA","SessB","SessAVenue","SessBVenue","Type","SessALead","SessBLead",..._dis.map(di=>dates[di].label)];
       const rows=[cols.join("\t")];
       acts.forEach(a=>{
         rows.push([
           a.n||"",a.yg||"",a.cap||0,a.lead||"",(a.staff||[]).join(","),
           a.v||"",a.cost||"",a.sess||"",(a.notes||"").replace(/\t/g," ").replace(/\n/g," "),
           a.offsite?"yes":"",a.sessA||"",a.sessB||"",a.sessAVenue||"",a.sessBVenue||"",
+          a.type||"optional",a.sessALead||"",a.sessBLead||"", // v184
           ..._dis.map(di=>a.di&&a.di.includes(di)?"Y":"N")
         ].join("\t"));
       });
