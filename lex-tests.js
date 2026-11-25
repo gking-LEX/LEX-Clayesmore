@@ -3339,10 +3339,53 @@ function v184Tests() {
   t("SessALead and SessBLead set a split's leads", q.d.sessALead === "AAA" && q.d.sessBLead === "BBB");
   q = row({ sessalead: "", sessblead: "" }, { sessA: "Study", sessB: "Launch", lead: "ZZZ" });
   t("a split's leads are not copied from Lead", !("sessALead" in q.d) && !("sessBLead" in q.d));
-  t("the import reads the new columns and calls this", has('"sessavenue","sessbvenue","type","sessalead","sessblead"]);') && has("_actImportExtras(data,get,col=>colIdx(col)>=0,_badTypes); // v184"));
+  t("the import reads the new columns and calls this", has('"sessavenue","sessbvenue","type","sessalead","sessblead"') && has("_actImportExtras(data,get,col=>colIdx(col)>=0,_badTypes); // v184"));
   t("…and reports a bad Type", has('if(_badTypes.length)alert("Type must be optional, compulsory or designation.'));
   t("the export writes Type, SessALead and SessBLead, so a round trip keeps them",
-    has('"SessA","SessB","SessAVenue","SessBVenue","Type","SessALead","SessBLead",..._dis.map(di=>dates[di].label)];') && has('a.type||"optional",a.sessALead||"",a.sessBLead||"", // v184'));
+    has('"SessA","SessB","SessAVenue","SessBVenue","Type","SessALead","SessBLead",') && has('a.type||"optional",a.sessALead||"",a.sessBLead||"",'));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// v185: the Activities calendar's staff cells, and Staff needed. Invented data only.
+function v185Tests() {
+  S("v185 — Activities calendar: staff count, staff needed, every code; readable at any text size");
+  const M = [grab("function actStaffCellModel(a,di){", "\r\n}", "actStaffCellModel"), grab("function _actStaffCountText(sm){", "\r\n}", "_actStaffCountText"),
+    grab("function isSplitAct(a){", "}", "isSplitAct"), grab("function saKeysForDate(di){", "\r\n}", "saKeysForDate"),
+    grab("function saGet(key){", "}", "saGet"), grab("function saCode(key){", "}", "saCode")].join("\n");
+  const W = sa => new Function("sa", `function saRole(k){const v=sa[k];return v&&v.role||"support";}\n${M}\nreturn {actStaffCellModel,_actStaffCountText};`)(sa);
+  const sa = { "4|TCH": { act: "Hike", role: "lead" }, "4|AAA": { act: "Hike", role: "support" }, "4|BBB": { act: "Hike", role: "support" },
+    "4|CCC|A": { act: "Hike", role: "support" }, "4|DDD": { act: "Other", role: "lead" },
+    "4|LDA|A": { act: "Dance", role: "support" }, "4|SUP|A": { act: "Dance", role: "support" }, "4|LDB|B": { act: "Pilates", role: "lead" },
+    "5|TCH": { act: "Hike", role: "lead" } };
+  const X = W(sa);
+  const hike = { n: "Hike", sess: "A+B", sessA: "Hike", sessB: "Hike", lead: "TCH", staffReq: 4 };
+  let m = X.actStaffCellModel(hike, 4);
+  t("every member of staff is counted, not just five (4 on, one P1 only)", m.total === 4 && m.sessions[0].n === 4 && m.sessions[1].n === 3, JSON.stringify(m.sessions));
+  t("the lead comes first", m.staff[0].code === "TCH" && m.staff[0].lead && !m.staff[1].lead);
+  t("someone on one session only is marked with it", m.staff.find(p => p.code === "CCC").sess.join() === "A");
+  t("a whole-day activity is short if either session is (P4 has 3 of 4)", m.short === true);
+  t("…and the count says which session", X._actStaffCountText(m) === "P1 4/4 · P4 3/4", X._actStaffCountText(m));
+  t("covered when each session has enough", X.actStaffCellModel(Object.assign({}, hike, { staffReq: 3 }), 4).short === false);
+  t("no number needed set: never short, plain count", X.actStaffCellModel(Object.assign({}, hike, { staffReq: 0 }), 5).short === false
+    && X._actStaffCountText(X.actStaffCellModel(Object.assign({}, hike, { staffReq: 0 }), 5)) === "1 staff");
+  t("staff on another activity are not counted", !m.staff.some(p => p.code === "DDD"));
+  const dance = { n: "Dance then Pilates", sess: "A+B", sessA: "Dance", sessB: "Pilates", sessALead: "LDA", sessBLead: "LDB", staffReq: 2 };
+  m = X.actStaffCellModel(dance, 4);
+  t("a split counts P1 and P4 separately", m.sessions[0].n === 2 && m.sessions[1].n === 1 && X._actStaffCountText(m) === "P1 2/2 · P4 1/2", X._actStaffCountText(m));
+  t("…its P1 and P4 leads are leads (even where the entry itself says support)", m.staff.filter(p => p.lead).map(p => p.code).sort().join() === "LDA,LDB");
+  t("…and it is short (P4 has 1 of 2)", m.short === true);
+  m = X.actStaffCellModel({ n: "Hike", sess: "A", sessA: "Hike", sessB: "Hike", staffReq: 1 }, 4);
+  t("a P1-only activity is judged on P1 alone", m.runs.join() === "A" && m.short === false);
+  const XI = new Function(grab("function _actImportExtras(data,get,has,badTypes){", "\r\n}", "_actImportExtras") + "\nreturn _actImportExtras;")();
+  const imp = cols => { const d = { n: "Invented", lead: "", sessA: "", sessB: "" }; XI(d, c => cols[c] || "", c => c in cols, []); return d; };
+  t("the import's Staff Needed sets it", imp({ "staff needed": " 3 " }).staffReq === 3);
+  t("…a blank or non-number leaves it alone", !("staffReq" in imp({ "staff needed": "" })) && !("staffReq" in imp({ "staff needed": "two" })) && !("staffReq" in imp({})));
+  t("the export writes Staff Needed", has('"Type","SessALead","SessBLead","Staff Needed",..._dis.map(di=>dates[di].label)];') && has('a.staffReq?String(a.staffReq):""'));
+  t("Settings → Activities has a Staff needed column and field", has('"Cap","Staff needed","Lead & Staff"') && has('mk("staffReq","48px","number")') && has('["Staff needed (per session)","staffReq","number"]') && has("staffReq:parseInt(inputs.staffReq.value,10)||0"));
+  const cell = grab("function _actStaffCell(sm){", "\r\n}", "_actStaffCell");
+  t("the calendar cell uses the model, and shows every code (no five-code cut-off)", has("const sm=actStaffCellModel(a,di); // v185") && !has("staffOnDate.slice(0,5)") && /sm\.staff\.forEach/.test(cell));
+  t("its text is sized in em, so Settings → Text Size reaches it", has(".actcal-staff{font-size:0.92em;") && !/fontSize:"\d+px"/.test(cell));
+  t("each date header counts the activities short that day, and shows it", has("_shortByDi[di]=acts.filter(a=>(a.di||[]).includes(di)&&actStaffCellModel(a,di).short).length;") && has('if(_shortByDi[di])thContent.push(h("div",'));
 }
 
 // ── summary ──────────────────────────────────────────────────────────────────
@@ -3367,6 +3410,8 @@ function v184Tests() {
   catch (e) { fail++; failures.push("v183 → the tests threw: " + e.message); console.log("  FAIL  the v183 tests threw — " + (e.stack || e)); }
   try { v184Tests(); }
   catch (e) { fail++; failures.push("v184 → the tests threw: " + e.message); console.log("  FAIL  the v184 tests threw — " + (e.stack || e)); }
+  try { v185Tests(); }
+  catch (e) { fail++; failures.push("v185 → the tests threw: " + e.message); console.log("  FAIL  the v185 tests threw — " + (e.stack || e)); }
   try { await blockTests(); }
   catch (e) { fail++; failures.push("v171 blocks → the tests threw: " + e.message); console.log("  FAIL  the block tests threw — " + (e.stack || e)); }
   try { blockUseTests(); }
