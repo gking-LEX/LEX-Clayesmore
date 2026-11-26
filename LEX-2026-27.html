@@ -13,7 +13,7 @@
 // banner on every screen. After a reload into a current copy the list is shown, not lost.
 (function(W){
   'use strict';
-  var V=184;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
+  var V=185;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
   var JKEY='lex12-blockedwrites',MAXJ=300;
   var AUDIT=/\/rest\/v1\/(lex_log|lex_signins)(\?|$)/;   // the database records the version, never refuses
   var NOISE=/-(presence|appversion|synctest)/;           // lex_data keys that are nobody's edits
@@ -492,6 +492,13 @@ tr:hover td{background:var(--surface2);}
 .acts-compact td{vertical-align:middle;}
 .acts-compact input:not([type=checkbox]),.acts-compact select{padding:2px 5px;font-size:11px;height:24px;}
 .acts-compact .act-inline{display:flex;align-items:center;gap:3px;flex-wrap:nowrap;}
+/* v185: Activities calendar staff cells, in em so Settings → Text Size reaches them */
+.actcal-staff{font-size:0.92em;line-height:1.35;text-align:left;white-space:normal;}
+.actcal-count{font-weight:700;white-space:nowrap;}
+.actcal-chips{display:flex;flex-wrap:wrap;gap:2px 3px;margin-top:2px;}
+.actcal-chip{font-family:var(--mono);padding:0 3px;border-radius:3px;background:var(--surface3);color:var(--text2);white-space:nowrap;}
+.actcal-chip.lead{font-weight:700;color:var(--text);background:var(--surface);border:1px solid var(--border2);}
+.actcal-pupils{font-size:0.92em;font-weight:600;margin-top:2px;}
 /* v86: calendar scroll containers fit the viewport so the horizontal scrollbar is reachable on open */
 .cal-scroll{max-height:calc(100vh - 230px);}
 tr:hover .sticky-l{background:var(--surface2);}
@@ -1094,7 +1101,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v184';
+const CURRENT_VERSION = 'v185';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -2337,6 +2344,9 @@ function _actImportExtras(data,get,has,badTypes){
   const la=has("sessalead")?get("sessalead"):"",lb=has("sessblead")?get("sessblead"):"";
   if(la)data.sessALead=la;else if(whole&&data.lead)data.sessALead=data.lead;
   if(lb)data.sessBLead=lb;else if(whole&&data.lead)data.sessBLead=data.lead;
+  // v185: Staff Needed (per session), so it can be set for every activity in one import.
+  const sn=has("staff needed")?String(get("staff needed")).trim():"";
+  if(sn!==""&&/^\d+$/.test(sn))data.staffReq=parseInt(sn,10);
   return data;
 }
 
@@ -5313,6 +5323,53 @@ function getUnstaffed(){
   return m;
 }
 // Staff codes assigned to an activity or component on a given date (handles session-specific keys, deduped)
+// v185: who is on an activity on a date, per session, for the Activities calendar. The cell
+// showed at most five codes in fixed 9px type (Settings → Text Size could not reach it) and no
+// count, so "is this covered?" meant counting initials by eye. Staffing is per session, so a
+// split counts P1 and P4 separately against the staff needed (a.staffReq, per session); a
+// whole-day activity is short if either session is.
+function actStaffCellModel(a,di){
+  const split=isSplitAct(a);
+  const runs=split?["A","B"]:(a.sess==="A"?["A"]:a.sess==="B"?["B"]:["A","B"]);
+  const compFor={A:split?a.sessA:a.n,B:split?a.sessB:a.n};
+  const per={A:new Map(),B:new Map()};
+  saKeysForDate(di).forEach(k=>{
+    const v=saGet(k);if(!v)return;
+    const s=k.split("|")[2]||"",code=saCode(k);
+    runs.forEach(S=>{
+      if(s&&s!==S)return;
+      if(v!==compFor[S]&&v!==a.n)return;
+      const lead=saRole(k)==="lead"||code===a.lead||code===(S==="A"?a.sessALead:a.sessBLead);
+      per[S].set(code,!!(per[S].get(code)||lead));
+    });
+  });
+  const need=Math.max(0,parseInt(a.staffReq,10)||0);
+  const sessions=runs.map(S=>({sess:S,n:per[S].size}));
+  const people=new Map();
+  runs.forEach(S=>per[S].forEach((lead,code)=>{const p=people.get(code)||{code,lead:false,sess:[]};p.lead=p.lead||lead;p.sess.push(S);people.set(code,p);}));
+  const list=[...people.values()].sort((x,y)=>(y.lead-x.lead)||x.code.localeCompare(y.code));
+  return {split,runs,need,sessions,staff:list,total:list.length,short:need>0&&sessions.some(s=>s.n<need)};
+}
+function _actStaffCountText(sm){
+  const fmt=n=>sm.need?n+"/"+sm.need:String(n),sl=S=>S==="A"?"P1":"P4";
+  if(sm.sessions.length>1&&(sm.split||sm.sessions[0].n!==sm.sessions[1].n))return sm.sessions.map(s=>sl(s.sess)+" "+fmt(s.n)).join(" · ");
+  return fmt(sm.sessions[0]?sm.sessions[0].n:0)+" staff";
+}
+let _actCalCountsOnly=false;try{_actCalCountsOnly=localStorage.getItem("lex12-actcal-counts")==="1";}catch(_){}
+function _actStaffCell(sm){
+  const box=h("div",{className:"actcal-staff"});
+  const col=sm.short?"var(--red)":sm.total?(sm.need?"var(--green)":"var(--text2)"):"var(--amber)";
+  box.appendChild(h("div",{className:"actcal-count",style:{color:col},
+    title:sm.need?"Staff needed per session: "+sm.need+(sm.short?" — short":" — covered"):"No staff-needed number set (Settings → Activities)"},
+    sm.total?_actStaffCountText(sm):"No staff"+(sm.need?" (need "+sm.need+")":"")));
+  if(!_actCalCountsOnly&&sm.total){
+    const chips=h("div",{className:"actcal-chips"});
+    sm.staff.forEach(p=>{const s=staff.find(x=>x.c===p.code);const part=sm.runs.length>1&&p.sess.length<sm.runs.length?(p.sess[0]==="A"?"P1":"P4"):"";
+      chips.appendChild(h("span",{className:"actcal-chip"+(p.lead?" lead":""),title:(s?s.n:p.code)+(p.lead?" — lead":"")+(part?" — "+part+" only":"")},p.code+(part?"·"+part:"")));});
+    box.appendChild(chips);
+  }
+  return box;
+}
 function getActStaffOnDate(actName,di){
   // Match by compound name OR by component name
   const act=findActByName_exact(actName);
@@ -6503,6 +6560,12 @@ function renderActCal(el){
   el.appendChild(subBar);
 
   if(actSub==="capacity"){renderCapacity(el);return;}
+  // v185: names or counts only in each date cell.
+  const _viewBar=h("div",{className:"flex mb-8",style:{gap:"6px",alignItems:"center",fontSize:"12px",color:"var(--text2)"}},"Staff in each date:");
+  [[false,"Names and count"],[true,"Count only"]].forEach(([v,l])=>_viewBar.appendChild(h("button",{className:"btn btn-sm "+(_actCalCountsOnly===v?"btn-primary":"btn-ghost"),onClick:()=>{
+    _actCalCountsOnly=v;try{localStorage.setItem("lex12-actcal-counts",v?"1":"0");}catch(_){}
+    const m=document.querySelector(".main");if(m){m.innerHTML="";renderActCal(m);}}},l)));
+  el.appendChild(_viewBar);
 
   // Group sorted date indices by half-term for column group headers
   const _sortedDIs=sortedDateIndices();
@@ -6541,6 +6604,8 @@ function renderActCal(el){
 
   // Row 2: individual date column headers
   const hr2=h("tr");
+  // v185: activities with fewer staff than needed, per date, in the header.
+  const _shortByDi={};_sortedDIs.forEach(di=>{_shortByDi[di]=acts.filter(a=>(a.di||[]).includes(di)&&actStaffCellModel(a,di).short).length;});
   _sortedDIs.forEach(di=>{
     const d=dates[di];
     const isSpecialDay=d.note&&(d.note.toLowerCase().includes("open")||d.note.toLowerCase().includes("morning")||d.note.toLowerCase().includes("exeat")||d.note.toLowerCase().includes("prep")||d.note.toLowerCase().includes("event")||d.note.toLowerCase().includes("speech")||d.note.toLowerCase().includes("sports"));
@@ -6549,8 +6614,9 @@ function renderActCal(el){
     if(d.note){
       thContent.push(h("div",{title:d.note,style:{fontSize:"8px",color:"var(--amber)",marginTop:"1px",cursor:"help"}},isSpecialDay?"⚠️ "+d.note.slice(0,16)+(d.note.length>16?"…":""):"📌 "+d.note.slice(0,12)+(d.note.length>12?"…":"")));
     }
+    if(_shortByDi[di])thContent.push(h("div",{title:"Activities with fewer staff than needed on this date",style:{fontSize:"0.9em",color:"var(--red)",fontWeight:700,marginTop:"1px"}},"⚠ "+_shortByDi[di]+" short"));
     hr2.appendChild(h("th",{style:{
-      minWidth:"72px",maxWidth:"88px",textAlign:"center",verticalAlign:"bottom",padding:"2px 3px",
+      minWidth:"7em",maxWidth:"10em",textAlign:"center",verticalAlign:"bottom",padding:"2px 3px",
       background:isSpecialDay?"var(--amber-soft, #fff9e6)":"",
       borderLeft:_htBoundary.has(di)?"2px solid var(--border2)":""
     }},...thContent));
@@ -6596,29 +6662,18 @@ function renderActCal(el){
       const allocHere=countByActDate[a.n+"|"+di]||0;
       const hasActivity=on||perDateCount>0;
       const td=h("td",{style:{
-        verticalAlign:"middle",textAlign:"center",padding:"2px 3px",maxWidth:"88px",
+        verticalAlign:"top",textAlign:"left",padding:"3px 4px",maxWidth:"10em",
         background:on?(col+"0d"):perDateCount>0?"var(--purple-soft)":"transparent",
         borderLeft:_htBoundary.has(di)?"2px solid var(--border2)":""
       }});
       if(hasActivity){
-        const staffOnDate=getActStaffOnDate(a.n,di);
-        if(staffOnDate.length>0){
-          const div=h("div",{style:{fontSize:"9px",fontFamily:"var(--mono)",lineHeight:"1.5"}});
-          const _shown=staffOnDate.slice(0,5);
-          _shown.forEach(sc=>{
-            div.appendChild(h("span",{style:{display:"inline-block",marginRight:"2px",
-              fontWeight:sc===a.lead?700:400,color:sc===a.lead?"var(--text)":"var(--text3)"}},sc));
-          });
-          if(staffOnDate.length>5)div.appendChild(h("span",{title:staffOnDate.join(", "),style:{display:"inline-block",color:"var(--text3)",fontWeight:600,cursor:"help"}},"+"+(staffOnDate.length-5)+" more"));
-          td.appendChild(div);
-        } else if(on){
-          td.appendChild(h("div",{style:{color:"var(--amber)",fontSize:"9px",fontWeight:600}},"No staff"));
-        }
+        const sm=actStaffCellModel(a,di); // v185: count, staff needed, every code
+        if(sm.total||on)td.appendChild(_actStaffCell(sm));
         if(allocHere>0){
           const capStr=a.cap>0?("/"+a.cap):"";
           const pct=a.cap>0?allocHere/a.cap:0;
           const countColor=a.cap>0?(pct>=0.9?"var(--red)":pct>=0.6?"var(--amber)":"var(--green)"):"var(--accent)";
-          td.appendChild(h("span",{style:{fontSize:"9px",color:countColor,fontWeight:600,marginTop:"1px",cursor:"pointer",textDecoration:"underline",textDecorationStyle:"dotted",display:"inline-block"},onClick:ev=>{
+          td.appendChild(h("span",{className:"actcal-pupils",title:"Pupils on this date (click for the list)",style:{color:countColor,cursor:"pointer",textDecoration:"underline",textDecorationStyle:"dotted",display:"inline-block"},onClick:ev=>{
             ev.stopPropagation();
             document.querySelectorAll(".cap-pupil-popup").forEach(p=>p.remove());
             const pupilData=getPupilsOnActDate(a.n,di);
@@ -6642,9 +6697,9 @@ function renderActCal(el){
               const txt=pupilData.map(p=>p.name+"\t"+displayYg(p.yg)+"\t"+p.house).join("\n");
               navigator.clipboard.writeText(a.n+" — "+dates[di].label+"\nName\tYear\tHouse\n"+txt).then(()=>toast("Copied"));
             }},"📋 Copy list"));
-          }},allocHere+capStr));
+          }},allocHere+capStr+" pupils"));
         } else if(on){
-          td.appendChild(h("div",{style:{fontSize:"9px",color:"var(--text3)",marginTop:"1px"}},"0"+(a.cap>0?"/"+a.cap:"")));
+          td.appendChild(h("div",{className:"actcal-pupils",style:{color:"var(--text3)"}},"0"+(a.cap>0?"/"+a.cap:"")+" pupils"));
         }
       }
       tr.appendChild(td);
@@ -6656,7 +6711,7 @@ function renderActCal(el){
     tbody.appendChild(tr);
   });
   tbl.appendChild(tbody);wrap.appendChild(tbl);el.appendChild(wrap);
-  el.appendChild(h("div",{style:{fontSize:"11px",color:"var(--text3)",marginTop:"6px"}},"Bold code=lead. Cap cell shows S1/S2 alloc below. Date cells show per-date pupil count. Up to 5 staff shown per date (+N more). Half-term groups shown in column headers."));
+  el.appendChild(h("div",{style:{fontSize:"11px",color:"var(--text3)",marginTop:"6px"}},"Each date shows the staff count (as on/needed when Staff needed is set in Settings → Activities; red = short, green = covered), every member of staff (lead first, in bold; ·P1/·P4 = that session only), then pupils/places. Cap cell shows S1/S2 alloc below. Half-term groups shown in column headers."));
 }
 
 
@@ -14180,7 +14235,7 @@ function renderAdminActs(el){
   formWrap.appendChild(h("div",{style:{fontWeight:600,fontSize:"13px",marginBottom:"12px"}},"New Activity"));
   const inputs={};
   const grid=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:"10px",marginBottom:"12px"}});
-  [["Activity Name","n","text"],["Year Groups","yg","text"],["Capacity","cap","number"],["Cost (or FOC)","cost","text"],["Session","sess","select"],["Type","type","typeSel"]].concat(adminMode?[["Weight (0.5–2)","wt","number"]]:[] ).forEach(([label,key,type])=>{
+  [["Activity Name","n","text"],["Year Groups","yg","text"],["Capacity","cap","number"],["Staff needed (per session)","staffReq","number"],["Cost (or FOC)","cost","text"],["Session","sess","select"],["Type","type","typeSel"]].concat(adminMode?[["Weight (0.5–2)","wt","number"]]:[] ).forEach(([label,key,type])=>{
     const w=h("div",null,h("label",{className:"field-label"},label));
     if(type==="select"){
       const sel=h("select",{style:{width:"100%"}});
@@ -14226,7 +14281,7 @@ function renderAdminActs(el){
       const na={id:"A"+Date.now().toString(36).slice(-5).toUpperCase(),
         n:inputs.n.value||"New Activity",type:inputs.type?inputs.type.value:"optional",
         yg:inputs.yg.value||"9-12",
-        cap:parseInt(inputs.cap.value,10)||0,lead:inputs.lead.value,
+        cap:parseInt(inputs.cap.value,10)||0,staffReq:parseInt(inputs.staffReq.value,10)||0,lead:inputs.lead.value,
         v:inputs._venueHolder.v||"TBC",cost:inputs.cost.value||"FOC",
         sess:inputs.sess.value||"A+B",mb:inputs.mb.checked?1:0,
         wt:inputs.wt?parseFloat(inputs.wt.value)||1:1,
@@ -14241,7 +14296,7 @@ function renderAdminActs(el){
   // Acts table — sorted alphabetically
   const aw=h("div",{className:"table-wrap scroll-table cal-scroll",style:{maxHeight:"65vh"}});_fitCalScroll(aw);
   const at=h("table",{className:"acts-compact"});
-  at.appendChild(h("thead",null,h("tr",null,...["Activity","Type","Yr","Cap","Lead & Staff","Venue","Notes","Cost","Billing","Mode","Sess","🚌","Offsite","Consent","RA","Prov RA",...(adminMode?["Lead Wt","Staff Wt"]:[])]
+  at.appendChild(h("thead",null,h("tr",null,...["Activity","Type","Yr","Cap","Staff needed","Lead & Staff","Venue","Notes","Cost","Billing","Mode","Sess","🚌","Offsite","Consent","RA","Prov RA",...(adminMode?["Lead Wt","Staff Wt"]:[])]
     .concat(["Dates",""]).map((x,i)=>h("th",i===0?{className:"sticky-lt",style:{minWidth:"240px"}}:null,x)))));
   const ab=h("tbody",null);
   const sortedActsForTable=[...acts].sort((a,b)=>a.n.localeCompare(b.n));
@@ -14265,6 +14320,7 @@ function renderAdminActs(el){
     tr.appendChild(h("td",null,typeSel));
     tr.appendChild(h("td",null,mk("yg","55px")));
     tr.appendChild(h("td",null,mk("cap","60px","number")));
+    tr.appendChild(h("td",{title:"Staff needed per session (P1 and P4 each). Shown against who is on, on the Activities calendar."},mk("staffReq","48px","number"))); // v185
     // Lead dropdown
     const ls=_staffCodeSelect(a.lead,v=>{a.lead=v;syncRosterToCalendar();rebuildAdminPreserveScroll();},"75px"); // v170
     ls.setAttribute("data-fkey",a.id+"|lead");
@@ -14977,7 +15033,7 @@ function renderAdminBulk(el){
   const csvActCard=h("div",{className:"card card-pad mb-12"});
   csvActCard.appendChild(h("div",{style:{fontWeight:600,marginBottom:"6px"}},"📥 Import Activities (CSV/TSV)"));
   csvActCard.appendChild(h("p",{style:{fontSize:"11px",color:"var(--text3)",marginBottom:"6px"}},
-    "Columns (Name required, rest optional): Name, Year Groups, Capacity, Lead, Support, Venue, Cost, Session, Notes, Offsite, SessA, SessB, SessAVenue, SessBVenue, Type (optional / compulsory / designation), SessALead, SessBLead (P1 and P4 leads of a split). Existing activities (matched by name) are updated; new ones added. Add one Y/N column per date (header = the exact date label) to set when each activity runs — export first to get the correct headers. The Support column sets additional staff. Export by term (Autumn/Spring/Summer) to edit one term at a time — re-importing a single-term file only changes that term's dates and leaves the others untouched. Staff are put on the calendar for dates still to come only."));
+    "Columns (Name required, rest optional): Name, Year Groups, Capacity, Lead, Support, Venue, Cost, Session, Notes, Offsite, SessA, SessB, SessAVenue, SessBVenue, Type (optional / compulsory / designation), SessALead, SessBLead (P1 and P4 leads of a split), Staff Needed (per session). Existing activities (matched by name) are updated; new ones added. Add one Y/N column per date (header = the exact date label) to set when each activity runs — export first to get the correct headers. The Support column sets additional staff. Export by term (Autumn/Spring/Summer) to edit one term at a time — re-importing a single-term file only changes that term's dates and leaves the others untouched. Staff are put on the calendar for dates still to come only."));
   const csvActExample="Name\tYear Groups\tCapacity\tLead\tSupport\tVenue\tCost\tSession\tNotes\tOffsite\tSessA\tSessB\tSat 19 Sep\tSat 27 Sep\nDofE\t9,10\t30\tJAR\tABC,DEF\tSports Hall\tFOC\tA+B\tBronze award\tno\t\t\tY\tN\nKarting\t12,13\t9\tGHK\t\tTeamSport\t50\tA+B\t\tyes\t\t\tN\tY";
   const csvActTa=h("textarea",{rows:4,placeholder:csvActExample,style:{marginBottom:"8px"}});
   csvActCard.appendChild(csvActTa);
@@ -14995,7 +15051,7 @@ function renderAdminBulk(el){
       const reqName=colIdx("name");
       if(reqName<0){toast("CSV must have a 'Name' column","err");return;}
       // v87: detect per-date Y/N columns (header = exact date label); flag headers matching neither a field nor a date
-      const _knownFields=new Set(["name","year groups","yg","capacity","cap","lead","support","venue","cost","session","sess","notes","offsite","sessa","sessb","sessavenue","sessbvenue","type","sessalead","sessblead"]);
+      const _knownFields=new Set(["name","year groups","yg","capacity","cap","lead","support","venue","cost","session","sess","notes","offsite","sessa","sessb","sessavenue","sessbvenue","type","sessalead","sessblead","staff needed"]);
       const dateCols=[];const unknownHeaders=[];
       headers.forEach((hdr,i)=>{
         if(!hdr)return;
@@ -15049,14 +15105,14 @@ function renderAdminBulk(el){
       // Export activities to CSV (TSV actually — easier paste back)
       const _term=_bulkExportTermSel.value;
       const _dis=sortedDateIndices().filter(di=>_term==="__all__"||_termOfHalf(dates[di].half)===_term);
-      const cols=["Name","Year Groups","Capacity","Lead","Support","Venue","Cost","Session","Notes","Offsite","SessA","SessB","SessAVenue","SessBVenue","Type","SessALead","SessBLead",..._dis.map(di=>dates[di].label)];
+      const cols=["Name","Year Groups","Capacity","Lead","Support","Venue","Cost","Session","Notes","Offsite","SessA","SessB","SessAVenue","SessBVenue","Type","SessALead","SessBLead","Staff Needed",..._dis.map(di=>dates[di].label)];
       const rows=[cols.join("\t")];
       acts.forEach(a=>{
         rows.push([
           a.n||"",a.yg||"",a.cap||0,a.lead||"",(a.staff||[]).join(","),
           a.v||"",a.cost||"",a.sess||"",(a.notes||"").replace(/\t/g," ").replace(/\n/g," "),
           a.offsite?"yes":"",a.sessA||"",a.sessB||"",a.sessAVenue||"",a.sessBVenue||"",
-          a.type||"optional",a.sessALead||"",a.sessBLead||"", // v184
+          a.type||"optional",a.sessALead||"",a.sessBLead||"",a.staffReq?String(a.staffReq):"", // v184, v185
           ..._dis.map(di=>a.di&&a.di.includes(di)?"Y":"N")
         ].join("\t"));
       });
