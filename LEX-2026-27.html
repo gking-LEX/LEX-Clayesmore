@@ -13,7 +13,7 @@
 // banner on every screen. After a reload into a current copy the list is shown, not lost.
 (function(W){
   'use strict';
-  var V=185;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
+  var V=186;                                    // = CURRENT_VERSION without the "v" (lex-tests checks)
   var JKEY='lex12-blockedwrites',MAXJ=300;
   var AUDIT=/\/rest\/v1\/(lex_log|lex_signins)(\?|$)/;   // the database records the version, never refuses
   var NOISE=/-(presence|appversion|synctest)/;           // lex_data keys that are nobody's edits
@@ -1101,7 +1101,7 @@ function buildExcelFilterPopup(opts){
 //   SYSTEM_YEAR_LABEL = "2026-27"
 //   PLANNING_YEAR_MODE = true  (shows yellow "Planning Year — not yet active" banner)
 //   LS_PREFIX = "lex12-"
-const CURRENT_VERSION = 'v185';
+const CURRENT_VERSION = 'v186';
 const DEBUG=false; // v121: gate verbose logs; console.error/warn stay live
 function dlog(){ if(DEBUG){ try{ console.log.apply(console,arguments); }catch(_){} } }
 // ── Admin allow-list (v109) ───────────────────────────────
@@ -3414,9 +3414,19 @@ async function loadFromSupabase(){
   // empty in-memory value over real cloud data. Sticky: never downgraded here.
   try{keys.forEach((k,i)=>{if(!_isEmptyValue(blobRes[i]))_loadedNonEmpty[k]=true;});}catch(_){}
 
+  // v186: both exits below keep what this tab holds because its edits have not reached the
+  // cloud yet. That only makes sense in Admin. The staff portal and the pupil timetable never
+  // write blobs (v82: saveSupa returns at once there, so _hasPendingSupaWrite is never cleared),
+  // and their register marks are per-row and kept by the _touchedAttKeys merge further down.
+  // On a portal these exits only froze the page on whatever copy it started from. On 27 Nov a Y9
+  // pupil's phone showed the Autumn 2 timetable from 30 Sept (7, 14 and 28 Nov blank, 5 Dec
+  // Wellbeing) even after a hard refresh: the pupil typed their name while the cloud load was
+  // running, the focused name box tripped the v73 exit, and every redraw put the cursor back
+  // in it (v182) — yet the header said "Updated" with the current time.
+  const _onPortal=isStaffView()||isPublicTimetable();
   // v64: If we have unsaved local changes (saveLocal ran but saveSupa hasn't completed),
   // DON'T overwrite in-memory state with stale Supabase data. Instead, push local → Supabase.
-  if(_hasPendingSupaWrite){
+  if(_hasPendingSupaWrite&&!_onPortal){
     console.warn("loadFromSupabase: skipping overwrite — local changes pending write to Supabase. Triggering saveSupa instead.");
     syncStatus="online";lastSyncTime=new Date();
     saveSupa(); // re-trigger the Supabase write with current local state
@@ -3428,7 +3438,7 @@ async function loadFromSupabase(){
   // edit hasn't reached saveAll() yet (typically on blur), so the cloud
   // pull would overwrite an in-progress edit. Bail and try again next
   // cycle, by which point the user has either committed or moved on.
-  if(_editInProgress){
+  if(_editInProgress&&!_onPortal){
     console.warn("loadFromSupabase: skipping overwrite — user is editing (focus on input). Will retry next cycle.");
     syncStatus="online";lastSyncTime=new Date();
     return;
@@ -15509,6 +15519,26 @@ function renderPublicTimetable(){
     b.setAttribute("data-t",id);tabBar.appendChild(b);
   });
 
+  // v186: the first paint comes from this device's saved copy, which a pupil's phone never
+  // updates (portals don't save locally) — on 27 Nov one was from 30 Sept. Allocations wait for
+  // this visit's cloud load; if it can't be reached, the saved copy is shown with a warning.
+  // Returns true when the caller should stop (still loading).
+  function _pubDataGate(into,retry){
+    if(_staffDataState==="loading"){
+      into.appendChild(h("div",{className:"card card-pad",style:{textAlign:"center",padding:"40px"}},
+        h("div",{style:{fontSize:"18px",marginBottom:"8px"}},"⏳"),
+        h("div",{style:{fontWeight:600,marginBottom:"4px"}},"Fetching the latest timetable…"),
+        h("div",{style:{fontSize:"12px",color:"var(--text3)"}},"This usually takes a few seconds.")
+      ));
+      if(!window._pubGateRetry){window._pubGateRetry=true;
+        setTimeout(()=>{window._pubGateRetry=false;if(window._pubTab===retry){tabContent.innerHTML="";if(retry==="mine")buildMyTab();else buildBrowseTab();}},3000);}
+      return true;
+    }
+    if(_staffDataState==="stale")into.appendChild(h("div",{className:"alert alert-warn",style:{marginBottom:"12px"}},
+      "⚠ Couldn't reach LEX. This is the copy saved on this device and may be out of date — reload when you have a connection."));
+    return false;
+  }
+
   // ── Helper: get activity for a pupil on a date ──
   const _pubEngMap=buildEngMap();
   function getPupilActPub(ne,di){
@@ -15530,6 +15560,7 @@ function renderPublicTimetable(){
         setTimeout(()=>{window._pubMyRetry=false;if(window._pubTab==="mine"){tabContent.innerHTML="";buildMyTab();}},3000);}
       return;
     }
+    if(_pubDataGate(tabContent,"mine"))return; // v186
     if(!allocRes||!allocRes.length){
       tabContent.appendChild(h("div",{className:"alert alert-warn"},"Allocation has not been published yet. Check back soon."));
       return;
@@ -15675,6 +15706,7 @@ function renderPublicTimetable(){
         setTimeout(()=>{window._pubBrowseRetry=false;if(window._pubTab==="browse"){tabContent.innerHTML="";buildBrowseTab();}},3000);}
       return;
     }
+    if(_pubDataGate(tabContent,"browse"))return; // v186
     tabContent.appendChild(h("p",{style:{fontSize:"13px",color:"var(--text2)",marginBottom:"12px"}},"See what activities your year group or house are doing. Names and allocations only — choices are private."));
 
     const ygs=ygSort([...new Set(pupils.map(p=>p.yg).filter(Boolean))]);
@@ -19563,7 +19595,7 @@ async function _staffDataRefresh(){
   if(document.hidden)return;               // no point refreshing a background tab
   try{
     await loadFromSupabase();
-    setStaffDataState("fresh");
+    setStaffDataState(syncStatus==="error"?"stale":"fresh"); // v186: unreachable is not "fresh"
     if(isPublicTimetable())_pubRedraw();else renderStaffView();
     updateStaffFreshness();
   }catch(e){
@@ -19639,9 +19671,10 @@ if(isPublicTimetable()||isStaffView()){
     try{setStaffDataState("loading");}catch(_){}
     loadFromSupabase().then(()=>{
       try{
+        // v186: the state first — the timetable draws from it (_pubDataGate)
+        setStaffDataState(syncStatus==="error"?"stale":"fresh");
         if(isPublicTimetable())_pubRedraw(); // v182: keeps a name typed before the cloud landed
         else renderStaffView();
-        setStaffDataState("fresh");
       }catch(e){console.error("background re-render failed",e);}
     }).catch(e=>{
       console.error("background sync failed",e);
