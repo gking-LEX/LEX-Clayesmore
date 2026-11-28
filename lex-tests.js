@@ -450,7 +450,7 @@ t("activity name column widened", has('nameInp.style.minWidth="230px";'));
 t("full name available on hover", has("nameInp.title=a.n"));
 t("portal shows a freshness indicator", has('id:"staff-freshness"'));
 t("failed sync marks data stale", has('setStaffDataState("stale")'));
-t("successful sync marks data fresh", has('setStaffDataState("fresh");'));
+t("successful sync marks data fresh", has('setStaffDataState(syncStatus==="error"?"stale":"fresh");')); // v186: unreachable → stale
 t("portal refreshes on a timer", has("_staffRefreshTimer=setInterval(_staffDataRefresh,STAFF_REFRESH_MS);"));
 t("portal refreshes when the tab is refocused", has('document.addEventListener("visibilitychange"'));
 t("background tabs skipped", has("if(document.hidden)return;"));
@@ -3171,9 +3171,9 @@ async function v181Tests() {
   const runSR = async (hash) => {
     const log = [];
     const f = new Function("location", "supaConnected", "supaClient", "document", "loadFromSupabase", "setStaffDataState", "isPublicTimetable", "isStaffView",
-      "renderPublicTimetable", "renderStaffView", "updateStaffFreshness", "console", SR + "\nreturn _staffDataRefresh;")(
+      "renderPublicTimetable", "renderStaffView", "updateStaffFreshness", "console", "syncStatus", SR + "\nreturn _staffDataRefresh;")(
       { hash }, true, {}, { hidden: false }, async () => log.push("load"), () => {}, () => false,
-      () => hash === "#staff" || hash === "#pupil", () => log.push("timetable"), () => log.push("staff"), () => {}, { error: () => {} });
+      () => hash === "#staff" || hash === "#pupil", () => log.push("timetable"), () => log.push("staff"), () => {}, { error: () => {} }, "online");
     await f();
     return log.join(",");
   };
@@ -3209,9 +3209,9 @@ async function v182Tests() {
   {
     const log = [];
     const f = new Function("location", "supaConnected", "supaClient", "document", "loadFromSupabase", "setStaffDataState", "isPublicTimetable", "isStaffView",
-      "renderPublicTimetable", "_pubRedraw", "renderStaffView", "updateStaffFreshness", "console", SR + "\nreturn _staffDataRefresh;")(
+      "renderPublicTimetable", "_pubRedraw", "renderStaffView", "updateStaffFreshness", "console", "syncStatus", SR + "\nreturn _staffDataRefresh;")(
       { hash: "" }, true, {}, { hidden: false }, async () => log.push("load"), () => {}, () => true, () => false,
-      () => log.push("timetable"), () => log.push("redraw"), () => log.push("staff"), () => {}, { error: () => {} });
+      () => log.push("timetable"), () => log.push("redraw"), () => log.push("staff"), () => {}, { error: () => {} }, "online");
     await f();
     t("on the timetable the refresh loads, then redraws keeping the pupil's place", log.join() === "load,redraw", log.join());
   }
@@ -3236,8 +3236,8 @@ async function v182Tests() {
     const text = n => n == null ? "" : typeof n === "string" ? n : (n.children || []).map(text).join(" ");
     const tabContent = mk("div");
     const win = { _pubQuery: "Zzyzx" };
-    new Function("window", "h", "tabContent", "pupils", "allocRes", "formData", "normEmail", "setTimeout", "requestAnimationFrame", MT + "\nreturn buildMyTab;")(
-      win, mk, tabContent, [{ surname: "Testperson", forename: "A", email: "a@x.test" }], [{ email: "a@x.test" }], [], ne, () => {}, () => {})();
+    new Function("window", "h", "tabContent", "pupils", "allocRes", "formData", "normEmail", "setTimeout", "requestAnimationFrame", "_pubDataGate", MT + "\nreturn buildMyTab;")(
+      win, mk, tabContent, [{ surname: "Testperson", forename: "A", email: "a@x.test" }], [{ email: "a@x.test" }], [], ne, () => {}, () => {}, () => false)();
     const find = (n, pred) => !n || typeof n !== "object" ? null : pred(n) ? n : (n.children || []).reduce((r, c) => r || find(c, pred), null);
     const box = find(tabContent, n => n.attrs && n.attrs.id === "pub-my-search");
     t("the name box keeps what was typed across a reload", !!box && box.attrs.value === "Zzyzx");
@@ -3388,6 +3388,88 @@ function v185Tests() {
   t("each date header counts the activities short that day, and shows it", has("_shortByDi[di]=acts.filter(a=>(a.di||[]).includes(di)&&actStaffCellModel(a,di).short).length;") && has('if(_shortByDi[di])thContent.push(h("div",'));
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// v186 — the pupil timetable shows the cloud's data, not a weeks-old copy on the device.
+// 27 Nov: a Y9 pupil's phone showed Autumn 2 as it was on 30 Sept (7, 14, 28 Nov blank,
+// 5 Dec Wellbeing) after a hard refresh. The page painted from the phone's saved copy, the
+// pupil typed their name while the cloud load ran, and loadFromSupabase's "user is editing"
+// exit kept the old copy — while the header said "Updated" with the current time.
+async function v186Tests() {
+  S("v186 — the pupil timetable waits for, and takes, the cloud's data");
+  // The real exits from loadFromSupabase, run with each kind of page.
+  const i = src.indexOf("  const _onPortal=isStaffView()||isPublicTimetable();");
+  const j = src.indexOf("user is editing (focus on input)", i);
+  const k = src.indexOf("\r\n  }", j);
+  t("the exits are found in loadFromSupabase", i > 0 && j > i && k > j && src.lastIndexOf("async function loadFromSupabase(){", i) > src.lastIndexOf("\r\n}\r\n", i));
+  const EXITS = src.slice(i, k + 5);
+  const run = (page, pending, editing) => {
+    const log = [];
+    const r = new Function("isStaffView", "isPublicTimetable", "_hasPendingSupaWrite", "_editInProgress", "saveSupa", "console",
+      "let syncStatus='connecting',lastSyncTime=null;\n" + EXITS + "\nreturn 'applied';")(
+      () => page === "staff", () => page === "pupil", pending, editing, () => log.push("saveSupa"), { warn: () => {} });
+    return r === undefined ? "kept" + (log.length ? "+" + log.join() : "") : r;
+  };
+  t("Admin, name box focused (editing): keeps what the tab holds, as before", run("admin", false, true) === "kept");
+  t("Admin, unsaved edits: keeps them and pushes, as before", run("admin", true, false) === "kept+saveSupa");
+  t("Admin, nothing in progress: applies the cloud", run("admin", false, false) === "applied");
+  t("pupil timetable, name box focused: applies the cloud (the 27 Nov phone)", run("pupil", false, true) === "applied");
+  t("pupil timetable, pending flag set: applies the cloud (a portal can never clear it)", run("pupil", true, true) === "applied");
+  t("staff portal, a register box focused: applies the cloud", run("staff", false, true) === "applied");
+  t("staff portal, pending flag set: applies the cloud", run("staff", true, false) === "applied");
+  t("the portal register marks are still kept by the per-row merge", has("_touchedAttKeys.forEach(k=>{if(attendance[k]!==undefined)merged[k]=attendance[k];});"));
+
+  // The real gate and the real tabs it guards.
+  const GATE = grab("  function _pubDataGate(into,retry){", "\r\n  }", "_pubDataGate");
+  const MT = grab("  function buildMyTab(){", "\r\n  }", "buildMyTab");
+  const BT = grab("  function buildBrowseTab(){", "\r\n    tabContent.appendChild(h(\"p\"", "buildBrowseTab start") + ",\"x\"));return 'drawn';}";
+  const mk = (tag, attrs, ...ch) => ({ tag, attrs: attrs || {}, children: ch.flat().filter(c => c != null), appendChild(c) { this.children.push(c); return c; }, set innerHTML(v) { this.children = []; } });
+  const text = n => n == null ? "" : typeof n === "string" ? n : (n.children || []).map(text).join(" ");
+  const find = (n, pred) => !n || typeof n !== "object" ? null : pred(n) ? n : (n.children || []).reduce((r, c) => r || find(c, pred), null);
+  const page = (state) => {
+    const tabContent = mk("div"), timers = [], win = { _pubTab: "mine" };
+    const api = new Function("window", "h", "tabContent", "pupils", "allocRes", "formData", "normEmail", "setTimeout", "requestAnimationFrame", "_staffDataState",
+      GATE + "\n" + MT + "\n" + BT + "\nreturn {mine:buildMyTab,browse:buildBrowseTab};")(
+      win, mk, tabContent, [{ surname: "Testperson", forename: "A", email: "a@x.test", yg: "Year 9" }], [{ email: "a@x.test" }], [], ne,
+      (fn, ms) => timers.push(ms), () => {}, state);
+    return { tabContent, timers, win, api };
+  };
+  {
+    const P = page("loading"); P.api.mine();
+    t("while this visit's cloud load runs, My Timetable says it is fetching", /Fetching the latest timetable/.test(text(P.tabContent)));
+    t("…and shows no name box, so nothing from the device's old copy can be looked up", !find(P.tabContent, n => n.attrs && n.attrs.id === "pub-my-search"));
+    t("…and checks again in 3 seconds", P.timers.join() === "3000");
+    const B = page("loading"); B.win._pubTab = "browse";
+    t("Browse Year / House waits too", B.api.browse() === undefined && /Fetching the latest timetable/.test(text(B.tabContent)));
+  }
+  {
+    const P = page("fresh"); P.api.mine();
+    t("once the cloud has loaded, the name box is there", !!find(P.tabContent, n => n.attrs && n.attrs.id === "pub-my-search"));
+    t("…with no fetching or warning message", !/Fetching|Couldn't reach/.test(text(P.tabContent)));
+    t("Browse draws once loaded", page("fresh").api.browse() === "drawn");
+  }
+  {
+    const P = page("stale"); P.api.mine();
+    t("cloud unreachable: the saved copy is shown…", !!find(P.tabContent, n => n.attrs && n.attrs.id === "pub-my-search"));
+    t("…under a warning that it may be out of date", /Couldn't reach LEX\. This is the copy saved on this device and may be out of date/.test(text(P.tabContent)));
+  }
+  t("both tabs go through the gate", has('if(_pubDataGate(tabContent,"mine"))return; // v186') && has('if(_pubDataGate(tabContent,"browse"))return; // v186'));
+
+  // The portal's state after a load: "fresh" only when the cloud was reached.
+  const SR = grab("async function _staffDataRefresh(){", "\r\n}", "_staffDataRefresh");
+  const runSR = async (status) => {
+    const log = [];
+    await new Function("location", "supaConnected", "supaClient", "document", "loadFromSupabase", "setStaffDataState", "isPublicTimetable", "isStaffView",
+      "renderPublicTimetable", "_pubRedraw", "renderStaffView", "updateStaffFreshness", "console", "syncStatus", SR + "\nreturn _staffDataRefresh;")(
+      { hash: "" }, true, {}, { hidden: false }, async () => log.push("load"), s => log.push(s), () => true, () => false,
+      () => {}, () => log.push("redraw"), () => {}, () => {}, { error: () => {} }, status)();
+    return log.join();
+  };
+  t("five-minute reload that reached the cloud: fresh, then redrawn", await runSR("online") === "load,fresh,redraw");
+  t("…one that could not: stale (was marked fresh), then redrawn", await runSR("error") === "load,stale,redraw");
+  t("start-up sets the state before the timetable redraws from it",
+    has('        setStaffDataState(syncStatus==="error"?"stale":"fresh");\r\n        if(isPublicTimetable())_pubRedraw();'));
+}
+
 // ── summary ──────────────────────────────────────────────────────────────────
 (async () => {
   try { await p0Tests(); }
@@ -3412,6 +3494,8 @@ function v185Tests() {
   catch (e) { fail++; failures.push("v184 → the tests threw: " + e.message); console.log("  FAIL  the v184 tests threw — " + (e.stack || e)); }
   try { v185Tests(); }
   catch (e) { fail++; failures.push("v185 → the tests threw: " + e.message); console.log("  FAIL  the v185 tests threw — " + (e.stack || e)); }
+  try { await v186Tests(); }
+  catch (e) { fail++; failures.push("v186 → the tests threw: " + e.message); console.log("  FAIL  the v186 tests threw — " + (e.stack || e)); }
   try { await blockTests(); }
   catch (e) { fail++; failures.push("v171 blocks → the tests threw: " + e.message); console.log("  FAIL  the block tests threw — " + (e.stack || e)); }
   try { blockUseTests(); }
